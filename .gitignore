@@ -31,9 +31,8 @@
 *.out
 *.app
 
-# MacOS
-.DS_Store
+# Hidden Files
+.*
 
 # Projects
 build
-.vscode
