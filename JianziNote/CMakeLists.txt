@@ -1,3 +1,8 @@
+# Copyright (c) 2024 King
+# 
+# This software is released under the MIT License.
+# https://opensource.org/licenses/MIT
+
 set(MODULE_NAME JianziNote)
 
 message("Module ${MODULE_NAME}")
