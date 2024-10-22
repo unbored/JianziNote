@@ -34,3 +34,4 @@ link_directories(
 )
 
 add_subdirectory(JianziNote)
+add_subdirectory(Jianzi2LaTeX)
