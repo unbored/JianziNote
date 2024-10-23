@@ -192,12 +192,24 @@ int main(int argc, char **argv) {
     std::string type = matches[1];
     std::string jianzi = matches[2];
 
+    // v或者h放到函数里分割
     if (type == "jzv") {
       jianzi_str_v.insert(jianzi);
     } else if (type == "jzh") {
       jianzi_str_h.insert(jianzi);
     } else {
-      jianzi_str.insert(jianzi);
+      // 根据逗号分割字符串
+      std::string input_str = jianzi;
+      while (!input_str.empty()) {
+        auto pos = input_str.find(',');
+        jianzi_str.insert(input_str.substr(0, pos));
+
+        if (pos == input_str.npos) {
+          break;
+        }
+        input_str = input_str.substr(pos + 1);
+      }
+      // jianzi_str.insert(jianzi);
     }
   }
 
