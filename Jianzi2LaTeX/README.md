@@ -20,4 +20,4 @@ TODO：`jianzilut.sty`仅根据当前文档生成，处理不同文件后将被�
 
 ## 示例
 `example`目录下是两个例子：`example.tex`是普通横排的例子，`exapmle_classic.tex`是线装竖排的例子。
-线装竖排模板`zhvt-classic.cls`来自chianjin的[zhvt-classic](https://github.com/chianjin/zhvt-classic)。
+线装竖排模板`zhvt-classic.cls`来自chianjin的[zhvt-classic](https://github.com/chianjin/zhvt-classic)，版权归原作者所有。
