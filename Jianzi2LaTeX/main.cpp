@@ -26,14 +26,8 @@ using namespace qin;
 enum class ArrayDirection { Vertical, Horizontal };
 
 // 阵列
-std::string ProcessArray(std::string db_file, std::string jianzi_str,
+std::string ProcessArray(JianziStyler &styler, std::string jianzi_str,
                          ArrayDirection dir) {
-  // 初始化减字系统
-  qin::Jianzi::OpenDb(db_file.c_str());
-  auto styler_names = qin::StylerFromDb::GetStylerList(db_file);
-  qin::StylerFromDb styler;
-  styler.Load(db_file, styler_names[0]);
-
   std::string input_str = jianzi_str;
   // 根据逗号分割字符串
   std::vector<std::string> sub_strs;
@@ -96,28 +90,11 @@ std::string ProcessArray(std::string db_file, std::string jianzi_str,
 }
 
 // 单字
-std::string ProcessSingle(std::string db_file, std::string jianzi_str) {
-  qin::Jianzi::OpenDb(db_file.c_str());
+std::string ProcessSingle(JianziStyler &styler, std::string jianzi_str) {
   Jianzi jianzi =
       Jianzi::Parse(Jianzi::ParseNatural(jianzi_str.c_str()).c_str());
 
-  auto styler_names = qin::StylerFromDb::GetStylerList(db_file);
-  qin::StylerFromDb styler;
-  styler.Load(db_file, styler_names[0]);
   auto path_data = jianzi.RenderPath(styler);
-
-  // // 创建boundingbox，根据boundingbox缩放笔画
-  // BoundingBox box;
-  // box.x = -0.5f; // 垂直居中
-  // box.y = -0.5f; // 水平上移
-
-  // for (auto &p : path_data)
-  // {
-  //     for (auto &pt : p.pts)
-  //     {
-  //         pt = box * pt;
-  //     }
-  // }
 
   // 根据path绘制
   qin::TikzRenderer renderer;
@@ -213,13 +190,19 @@ int main(int argc, char **argv) {
     }
   }
 
+  // 初始化减字系统
+  qin::Jianzi::OpenDb(db_file.c_str());
+  auto styler_names = qin::StylerFromDb::GetStylerList(db_file);
+  qin::StylerFromDb styler;
+  styler.Load(db_file, styler_names[0]);
+
   // 根据提取结果输出文件
   std::ofstream fout("jianzilut.sty");
 
   // 普通减字
   fout << "\\definejianzitikz{" << std::endl;
   for (auto &j : jianzi_str) {
-    fout << "{" << j << "}{" << ProcessSingle(db_file, j) << "}" << std::endl;
+    fout << "{" << j << "}{" << ProcessSingle(styler, j) << "}" << std::endl;
   }
   fout << "}" << std::endl;
 
@@ -227,7 +210,7 @@ int main(int argc, char **argv) {
   fout << "\\definejianzitikzv{" << std::endl;
   for (auto &j : jianzi_str_v) {
     fout << "{" << j << "}{"
-         << ProcessArray(db_file, j, ArrayDirection::Vertical) << "}"
+         << ProcessArray(styler, j, ArrayDirection::Vertical) << "}"
          << std::endl;
   }
   fout << "}" << std::endl;
@@ -236,7 +219,7 @@ int main(int argc, char **argv) {
   fout << "\\definejianzitikzh{" << std::endl;
   for (auto &j : jianzi_str_h) {
     fout << "{" << j << "}{"
-         << ProcessArray(db_file, j, ArrayDirection::Horizontal) << "}"
+         << ProcessArray(styler, j, ArrayDirection::Horizontal) << "}"
          << std::endl;
   }
   fout << "}" << std::endl;
