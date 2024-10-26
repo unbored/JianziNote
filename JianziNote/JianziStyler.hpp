@@ -26,6 +26,7 @@ class JianziStyler {
     std::vector<Point2f> pts;
   };
 
+  virtual std::vector<PathData> RenderChar(size_t codepoint) const = 0;
   virtual std::vector<PathData> RenderPath(
       const std::vector<Stroke> &strokes) const = 0;
   virtual float GetStrokeWidth() const = 0;

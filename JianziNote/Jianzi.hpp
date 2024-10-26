@@ -75,7 +75,7 @@ class Jianzi {
 
  protected:
   // 数据库
-  static std::unique_ptr<SQLite::Database> m_db;
+  static std::unique_ptr<SQLite::Database> s_db;
 
   std::string m_name;  // 减字名称
   JianziType m_type = JianziType::Other;
@@ -118,6 +118,14 @@ class Jianzi {
     Left = 2,
     Right = 1,
   };
+
+  // 减字名称与类型
+  struct JianziInfo {
+    std::string name;
+    JianziType type;
+  };
+  static std::vector<JianziInfo> s_alias_list;
+  static std::vector<JianziInfo> s_jianzi_list;
 
  protected:
   // 递归获取所有笔画

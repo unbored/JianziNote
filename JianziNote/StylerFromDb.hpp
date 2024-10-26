@@ -7,9 +7,11 @@
 #define STYLERFROMDB_H
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "FTFontReader.hpp"
 #include "JianziStyler.hpp"
 
 namespace qin {
@@ -19,12 +21,14 @@ class StylerFromDb : public JianziStyler {
   // 默认为SemiBold粗细，笔画宽度为0.1。
   // Regular粗细的宽度为0.07
   StylerFromDb(float stroke_width = 0.1f);
+  ~StylerFromDb();
 
   static std::vector<std::string> GetStylerList(std::string db_file);
   void Load(std::string db_file, std::string styler_name);
 
   // JianziStyler interface
  public:
+  virtual std::vector<PathData> RenderChar(size_t codepoint) const override;
   virtual std::vector<PathData> RenderPath(
       const std::vector<Stroke> &strokes) const override;
 
@@ -61,6 +65,9 @@ class StylerFromDb : public JianziStyler {
   };
 
   std::map<VertexType, VertexDesc> m_desc_map;
+
+  FTFontReader m_font_reader;
+  std::unique_ptr<char[]> m_font_data;
 };
 
 }  // namespace qin

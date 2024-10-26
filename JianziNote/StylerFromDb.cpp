@@ -11,11 +11,14 @@
 #include <magic_enum.hpp>
 #include <memory>
 
+#include "BoundingBox.hpp"
+
 #define JE(key) "json_extract(value, '$." #key "') as " #key
 
 namespace qin {
 
 StylerFromDb::StylerFromDb(float stroke_width) : c_stroke_width(stroke_width) {}
+StylerFromDb::~StylerFromDb() { m_font_reader.ReleaseFont(); }
 
 std::vector<std::string> StylerFromDb::GetStylerList(std::string db_file) {
   std::unique_ptr<SQLite::Database> db;
@@ -136,6 +139,27 @@ void StylerFromDb::Load(std::string db_file, std::string styler_name) {
     std::cout << e.what() << std::endl;
     throw e;
   }
+
+  // 从数据库中加载字库
+  try {
+    SQLite::Statement font_query(
+        *db, "select name,data,length(data) from font_data");
+    if (font_query.executeStep()) {
+      const char *font_data =
+          (const char *)font_query.getColumn("data").getBlob();
+      size_t length = font_query.getColumn("length(data)").getUInt();
+      if (font_data != nullptr && length > 0) {
+        // 拷贝数据
+        m_font_data = std::make_unique<char[]>(length);
+        memcpy(m_font_data.get(), font_data, length);
+        // 加载字库
+        m_font_reader.LoadFont(m_font_data.get(), length);
+      }
+    }
+  } catch (SQLite::Exception e) {
+    std::cout << e.what() << std::endl;
+    throw e;
+  }
 }
 
 const float c_pi = 3.14159f;
@@ -167,6 +191,22 @@ Point2f RotatePoint(const Point2f &pt, const Point2f &base, float angle) {
   ret = ret + base;
 
   return ret;
+}
+
+std::vector<JianziStyler::PathData> StylerFromDb::RenderChar(
+    size_t codepoint) const {
+  auto path_data = m_font_reader.GetPath(codepoint);
+
+  // 进行一个放的缩
+  float border = 0.00f;
+  // h设为负数以进行翻转。TODO: 基线值0.12
+  BoundingBox box = BoundingBox{0, 0.88, 0.001f, -0.001f};
+  for (auto &p : path_data) {
+    for (auto &pt : p.pts) {
+      pt = box * pt;
+    }
+  }
+  return path_data;
 }
 
 std::vector<JianziStyler::PathData> StylerFromDb::RenderPath(

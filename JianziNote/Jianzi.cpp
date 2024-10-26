@@ -14,6 +14,7 @@
 #include <magic_enum.hpp>
 #include <set>
 #include <stack>
+#include <string>
 
 #define JE(key) "json_extract(value, '$." #key "') as " #key
 
@@ -21,15 +22,54 @@ namespace qin
 
 {
 
-std::unique_ptr<SQLite::Database> Jianzi::m_db;
+std::unique_ptr<SQLite::Database> Jianzi::s_db;
+std::vector<Jianzi::JianziInfo> Jianzi::s_alias_list;
+std::vector<Jianzi::JianziInfo> Jianzi::s_jianzi_list;
 
 void Jianzi::OpenDb(const char *file) {
+  // 打开数据库
   try {
-    m_db = std::make_unique<SQLite::Database>(file);
+    s_db = std::make_unique<SQLite::Database>(file);
   } catch (SQLite::Exception e) {
     std::cout << e.what() << std::endl;
     throw e;
   }
+  // 加载减字和别名列表
+  try {
+    SQLite::Statement jianzi_query(*s_db, "select name,type from jianzi");
+    while (jianzi_query.executeStep()) {
+      JianziInfo info;
+      info.name = jianzi_query.getColumn("name").getString();
+      info.type = magic_enum::enum_cast<JianziType>(
+                      jianzi_query.getColumn("type").getString())
+                      .value_or(JianziType::Other);
+      s_jianzi_list.push_back(info);
+    }
+    SQLite::Statement alias_query(*s_db, "select alias,type from jianzi_alias");
+    while (alias_query.executeStep()) {
+      JianziInfo info;
+      info.name = alias_query.getColumn("alias").getString();
+      info.type = magic_enum::enum_cast<JianziType>(
+                      alias_query.getColumn("type").getString())
+                      .value_or(JianziType::Other);
+      s_alias_list.push_back(info);
+    }
+  } catch (SQLite::Exception e) {
+    std::cout << e.what() << std::endl;
+    throw e;
+  }
+
+  // 优先根据字符长短排序
+  auto JianziInfoComp = [](const JianziInfo &j1, const JianziInfo &j2) {
+    if (j1.name.length() != j2.name.length()) {
+      return j1.name.length() > j2.name.length();
+    } else {
+      return j1.name > j2.name;
+    }
+  };
+
+  std::sort(s_jianzi_list.begin(), s_jianzi_list.end(), JianziInfoComp);
+  std::sort(s_alias_list.begin(), s_alias_list.end(), JianziInfoComp);
 }
 
 Jianzi::Jianzi(const char *u8_ch) {
@@ -50,7 +90,7 @@ Jianzi::Jianzi(const char *u8_ch) {
   try {
     // 查询指定名称的减字
     SQLite::Statement jianzi_query(
-        *m_db, ("select * from jianzi where name = " + ch).c_str());
+        *s_db, ("select * from jianzi where name = " + ch).c_str());
     if (jianzi_query.executeStep()) {
       m_border_flags.t = jianzi_query.getColumn("border_t").getInt();
       m_border_flags.b = jianzi_query.getColumn("border_b").getInt();
@@ -73,7 +113,7 @@ Jianzi::Jianzi(const char *u8_ch) {
   try {
     // 查询指定名称的capsule，如果存在，则该减字具有可嵌入空间
     SQLite::Statement capsule_query(
-        *m_db, ("select * from capsule where name = " + ch).c_str());
+        *s_db, ("select * from capsule where name = " + ch).c_str());
     if (capsule_query.executeStep()) {
       m_capsule = std::make_unique<Capsule>();
       m_capsule->border_flags.t = capsule_query.getColumn("border_t").getInt();
@@ -97,7 +137,7 @@ Jianzi::Jianzi(const char *u8_ch) {
 
     // 查询指定名称的stroke，得到笔画列表
     SQLite::Statement stroke_query(
-        *m_db, ("select * from stroke where name = " + ch).c_str());
+        *s_db, ("select * from stroke where name = " + ch).c_str());
     while (stroke_query.executeStep()) {
       Stroke stroke;
       stroke.weight = stroke_query.getColumn("weight").getDouble();
@@ -105,7 +145,7 @@ Jianzi::Jianzi(const char *u8_ch) {
 
       // 根据vertice的json字串，获得所有的顶点数据
       SQLite::Statement vertex_query(
-          *m_db, "select " JE(type) ", " JE(x) ", " JE(y) ", " JE(
+          *s_db, "select " JE(type) ", " JE(x) ", " JE(y) ", " JE(
                      belong) " from json_each( ? )");
       vertex_query.bind(1, vertice);
       while (vertex_query.executeStep()) {
@@ -186,6 +226,13 @@ Jianzi Jianzi::Parse(const char *u8_str) {
     str = str.erase(ws_pos);
     ws_pos = str.find(U' ');
   }
+
+  // 特殊处理：!标记紧跟单个字符，给出名字后直接返回
+  if (!str.empty() && str[0] == U'!') {
+    result.m_name = str.cpp_str();
+    return result;
+  }
+
   // 前后添加括号，有利于后续处理
   str = "(" + str + ")";
 
@@ -225,14 +272,14 @@ Jianzi Jianzi::Parse(const char *u8_str) {
         // 确认减字存在
         try {
           SQLite::Statement jianzi_query(
-              *m_db, ("select 1 from jianzi where name = '" + sub + "' limit 1")
+              *s_db, ("select 1 from jianzi where name = '" + sub + "' limit 1")
                          .c_str());
           if (jianzi_query.executeStep()) {
             // 减字存在，直接存入
             values.push(Jianzi(sub.c_str()));
           } else {
             SQLite::Statement alias_query(
-                *m_db, ("select jianzi from jianzi_alias where alias = '" +
+                *s_db, ("select jianzi from jianzi_alias where alias = '" +
                         sub + "' limit 1")
                            .c_str());
             if (alias_query.executeStep()) {
@@ -361,49 +408,6 @@ std::string Jianzi::ParseNatural(const char *u8_str) {
     return std::string(u8_str);
   }
 
-  struct JianziInfo {
-    string name;
-    JianziType type;
-  };
-
-  // 获取所有别名和减字
-  std::vector<JianziInfo> alias_list;
-  std::vector<JianziInfo> jianzi_list;
-
-  try {
-    SQLite::Statement jianzi_query(*m_db, "select name,type from jianzi");
-    while (jianzi_query.executeStep()) {
-      JianziInfo info;
-      info.name = jianzi_query.getColumn("name").getString();
-      info.type = magic_enum::enum_cast<JianziType>(
-                      jianzi_query.getColumn("type").getString())
-                      .value_or(JianziType::Other);
-      jianzi_list.push_back(info);
-    }
-    SQLite::Statement alias_query(*m_db, "select alias,type from jianzi_alias");
-    while (alias_query.executeStep()) {
-      JianziInfo info;
-      info.name = alias_query.getColumn("alias").getString();
-      info.type = magic_enum::enum_cast<JianziType>(
-                      alias_query.getColumn("type").getString())
-                      .value_or(JianziType::Other);
-      alias_list.push_back(info);
-    }
-  } catch (...) {
-  }
-
-  // 优先根据字符长短排序
-  auto JianziInfoComp = [](const JianziInfo &j1, const JianziInfo &j2) {
-    if (j1.name.length() != j2.name.length()) {
-      return j1.name.length() > j2.name.length();
-    } else {
-      return j1.name > j2.name;
-    }
-  };
-
-  std::sort(jianzi_list.begin(), jianzi_list.end(), JianziInfoComp);
-  std::sort(alias_list.begin(), alias_list.end(), JianziInfoComp);
-
   // 检索标记
   std::vector<bool> input_marks(input_length, false);
   std::vector<JianziInfo> info_list(input_length);
@@ -440,15 +444,20 @@ std::string Jianzi::ParseNatural(const char *u8_str) {
   };
 
   // 先对别名进行标记
-  MarkInput(alias_list);
+  MarkInput(s_alias_list);
   // 再标记减字
-  MarkInput(jianzi_list);
+  MarkInput(s_jianzi_list);
 
-  // 检查是否所有位置均已处理
-  for (auto m : input_marks) {
-    if (!m) {
-      // 输入有问题，返回空
-      return std::string();
+  if (input_length == 1 && !input_marks[0]) {
+    // 如果输入为单个字且不在减字列表当中，标记!符号并在后续处理
+    return "!" + std::string(u8_str);
+  } else {
+    // 检查是否所有位置均已处理
+    for (auto m : input_marks) {
+      if (!m) {
+        // 输入有问题，返回空
+        return std::string();
+      }
     }
   }
 
@@ -1057,6 +1066,10 @@ Jianzi Jianzi::operator*(const Jianzi &content) const {
 
 std::vector<JianziStyler::PathData> qin::Jianzi::RenderPath(
     const JianziStyler &styler) const {
+  tiny_utf8::string name = m_name;
+  if (name.length() == 2 && name[0] == U'!') {
+    return styler.RenderChar(name[1]);
+  }
   std::vector<Stroke> strokes;
 
   float stroke_width = styler.GetStrokeWidth();

@@ -205,6 +205,7 @@ auto result = renderer.Render(path_data);
 - [magic_enum](https://github.com/Neargye/magic_enum)
 - [SQlite3](https://www.sqlite.org/index.html)
 - [SQLiteCpp](https://github.com/SRombauts/SQLiteCpp)
+- [FreeType2](https://freetype.org/)
 
 ### 兼容性
 
