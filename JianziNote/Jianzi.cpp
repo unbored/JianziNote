@@ -9,12 +9,14 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <magic_enum.hpp>
 #include <set>
 #include <stack>
 #include <string>
+
 
 #define JE(key) "json_extract(value, '$." #key "') as " #key
 
