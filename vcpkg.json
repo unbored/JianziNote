@@ -1,0 +1,10 @@
+{
+    "name": "jianzinote",
+    "version-string": "latest",
+    "dependencies": [
+      "sqlitecpp",
+      "tinyutf8",
+      "magic-enum",
+      "freetype"
+    ]
+  }
