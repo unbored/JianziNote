@@ -6,6 +6,8 @@
 #ifndef STYLERFROMDB_H
 #define STYLERFROMDB_H
 
+#include <cstddef>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>

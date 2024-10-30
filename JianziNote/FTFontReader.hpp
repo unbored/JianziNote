@@ -6,6 +6,8 @@
 #pragma once
 
 #include <ft2build.h>
+#include <cstddef>
+#include <cmath>
 
 #include <vector>
 

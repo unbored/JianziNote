@@ -6,7 +6,8 @@
 #pragma once
 
 #include <SQLiteCpp/SQLiteCpp.h>
-
+#include <cstddef>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>

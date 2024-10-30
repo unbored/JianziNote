@@ -4,7 +4,7 @@
 # https://opensource.org/licenses/MIT
 
 set(MODULE_NAME JianziNote)
-
+set(CMAKE_PREFIX_PATH ${PROJECT_SOURCE_DIR})
 message("Module ${MODULE_NAME}")
 
 file(GLOB_RECURSE MODULE_SOURCE

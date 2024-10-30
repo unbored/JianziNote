@@ -1,0 +1,10 @@
+[requires]
+sqlite3/3.45.0  # 请根据需要选择版本
+tiny-utf8/4.4.3  # 请根据需要选择版本
+magic_enum/0.9.6  # 请根据需要选择版本
+sqlitecpp/3.3.2   # 请根据需要选择版本
+freetype/2.13.3   # 请根据需要选择版本
+
+[generators]
+CMakeDeps
+CMakeToolchain

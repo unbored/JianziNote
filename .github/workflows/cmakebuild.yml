@@ -1,0 +1,87 @@
+name: CMake Build
+permissions:
+  contents: write
+on:
+  push:
+    tags:
+      - v* # 使用 v1.0.0 格式的标签
+  workflow_dispatch: # 添加手动触发功能
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }} # 根据矩阵选择操作系统
+
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86
+          - os: macos-latest
+            arch: x86
+          - os: macos-latest
+            arch: aarch64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v1
+        with:
+          cmake-version: "3.21.1" # 根据需要选择合适的版本
+
+      - name: Install dependencies
+        if: ${{ matrix.os != 'windows-latest' }}
+        run: |
+          pip install conan
+          conan profile detect
+          conan install . --build=missing
+
+      - name: Install dependencies on Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          choco install -y python --version=3.9.0
+          choco install -y cmake --installargs '"ADD_CMAKE_TO_PATH=System"'
+          python -m pip install conan
+          conan profile detect
+          conan profile update settings.compiler.cppstd=17 default  # 指定 C++17 标准
+          conan install . --build=missing
+
+      - name: Build
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.arch }} # 根据架构设置
+          make
+          echo "Build Success!"
+          pwd
+          cd ..
+          ls -al bin
+          tar -czvf ${{ matrix.os }}-${{ matrix.arch }}-jianzi.tar.gz ./bin/**
+          ls -al
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          path: ${{ matrix.os }}-${{ matrix.arch }}-jianzi.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: ./dist
+      - name: show download files
+        run: |
+          ls -al ./dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: ./**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

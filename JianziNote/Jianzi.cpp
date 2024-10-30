@@ -6,7 +6,7 @@
 #include "Jianzi.hpp"
 
 #include <tinyutf8/tinyutf8.h>
-
+#include <cmath>
 #include <algorithm>
 #include <cfloat>
 #include <functional>
