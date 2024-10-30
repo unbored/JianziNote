@@ -7,11 +7,13 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <cmath>
 #include <iostream>
 #include <magic_enum.hpp>
 #include <memory>
 
 #include "BoundingBox.hpp"
+
 
 #define JE(key) "json_extract(value, '$." #key "') as " #key
 
