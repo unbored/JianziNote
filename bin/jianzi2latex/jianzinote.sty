@@ -1,0 +1,126 @@
+
+\usepackage{xparse}
+\usepackage{tikz}
+
+\ExplSyntaxOn
+
+% 定义减字大小
+\dim_new:N \g_jianzi_size_dim
+\dim_set:Nn \g_jianzi_size_dim {24pt}
+\NewDocumentCommand{\setJianziSize}{m}{\dim_set:Nn \g_jianzi_size_dim {#1}}
+
+%带圈汉字
+\NewDocumentCommand{\encircle}{m}
+{
+  \settowidth{\g_jianzi_size_dim}{國}%
+  \vphantom{國}\hskip 0pt%
+  \begin{tikzpicture}[x=\g_jianzi_size_dim,y=\g_jianzi_size_dim,baseline=0.5\g_jianzi_size_dim]%
+  \useasboundingbox (0,0) rectangle (1,1);%
+  \draw[double] (0.5,0.5) circle [radius=0.47]%
+  node [yshift=0.267\g_jianzi_size_dim,scale=0.7] {#1};%
+  \end{tikzpicture}\vphantom{國}\hskip 0pt%
+}
+
+% 普适的变量
+\cs_generate_variant:Nn \str_case:nn { VV }
+\tl_new:N \l_jianzi_name_tl
+\tl_new:N \l_jianzi_tikz_tl
+\tl_new:N \g_jianzi_path_tl
+
+% 解析一串减字
+\NewDocumentCommand{\jzs}{m}
+  {
+    % split by comma ","
+    \seq_set_split:Nnx \l_tmpa_seq { , } { #1 }
+    \seq_map_function:NN \l_tmpa_seq \__jzs:n
+  }
+
+% 单个减字
+\cs_new:Nn \__jzs:n
+{
+    % 从查找表中读取tikz数据
+    \tl_set:Nn \l_jianzi_name_tl { #1 }
+    \tl_set:Nx \l_jianzi_tikz_tl
+    {
+        \str_case:VV \l_jianzi_name_tl \g_jianzi_path_tl
+    }
+    \settowidth{\g_jianzi_size_dim}{國}%
+  \vphantom{國}\hskip 0pt%
+  \begin{tikzpicture}[x=\g_jianzi_size_dim,y=\g_jianzi_size_dim,baseline=0.12\g_jianzi_size_dim]
+  \useasboundingbox (0,0) rectangle (1,1);
+  \fill \l_jianzi_tikz_tl;%
+  \end{tikzpicture}\vphantom{國}\hskip 0pt%
+}
+
+% 解析一串竖排减字
+\NewDocumentCommand{\jzr}{m}
+  {
+    % split by comma ","
+    \seq_set_split:Nnx \l_tmpa_seq { , } { #1 }
+    \seq_map_function:NN \l_tmpa_seq \__jzr:n
+  }
+
+% 单个减字竖排
+\cs_new:Nn \__jzr:n
+{
+    % 从查找表中读取tikz数据
+    \tl_set:Nn \l_jianzi_name_tl { #1 }
+    \tl_set:Nx \l_jianzi_tikz_tl
+    {
+        \str_case:VV \l_jianzi_name_tl \g_jianzi_path_tl
+    }
+    \settowidth{\g_jianzi_size_dim}{國}%
+  \vphantom{國}\hskip 0pt%
+  \begin{tikzpicture}[x=\g_jianzi_size_dim,y=\g_jianzi_size_dim,baseline=0.5\g_jianzi_size_dim]
+  \useasboundingbox (0,0) rectangle (1,1);
+  \fill[xshift=\g_jianzi_size_dim,rotate=90] \l_jianzi_tikz_tl;
+  \end{tikzpicture}\vphantom{國}\hskip 0pt%
+}
+
+% 竖排多个小减字
+\tl_new:N \g_jianzi_path_v_tl
+\NewDocumentCommand{\jzv}{m}
+{
+    % 从查找表中读取tikz数据
+    \tl_set:Nn \l_jianzi_name_tl { #1 }
+    \tl_set:Nx \l_jianzi_tikz_tl
+    {
+        \str_case:VV \l_jianzi_name_tl \g_jianzi_path_v_tl
+    }
+  \begin{tikzpicture}[x=\g_jianzi_size_dim,y=\g_jianzi_size_dim,baseline=0.12\g_jianzi_size_dim]
+  \fill \l_jianzi_tikz_tl;%
+  \end{tikzpicture}%
+}
+
+% 横排多个小减字
+\tl_new:N \g_jianzi_path_h_tl
+\NewDocumentCommand{\jzh}{m}
+{
+    % 从查找表中读取tikz数据
+    \tl_set:Nn \l_jianzi_name_tl { #1 }
+    \tl_set:Nx \l_jianzi_tikz_tl
+    {
+        \str_case:VV \l_jianzi_name_tl \g_jianzi_path_h_tl
+    }
+  \begin{tikzpicture}[x=\g_jianzi_size_dim,y=\g_jianzi_size_dim,baseline=0.12\g_jianzi_size_dim]
+  \fill \l_jianzi_tikz_tl;%
+  \end{tikzpicture}%
+}
+
+% 用于定义查找表
+\NewDocumentCommand{\definejianzitikz}{m}
+{
+    \tl_gset:Nn \g_jianzi_path_tl { #1 }
+}
+\NewDocumentCommand{\definejianzitikzv}{m}
+{
+    \tl_gset:Nn \g_jianzi_path_v_tl { #1 }
+}
+\NewDocumentCommand{\definejianzitikzh}{m}
+{
+    \tl_gset:Nn \g_jianzi_path_h_tl { #1 }
+}
+
+\ExplSyntaxOff
+
+\input{jianzilut.sty}

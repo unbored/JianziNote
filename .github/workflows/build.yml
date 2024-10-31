@@ -53,3 +53,9 @@ jobs:
           configurePreset: 'ninja-multi-vcpkg'
           buildPreset: 'ninja-vcpkg-release'
           #testPreset: 'test-release'
+
+      - name: Archive production artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            bin
