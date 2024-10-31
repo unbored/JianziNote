@@ -177,17 +177,21 @@ using namespace qin;
 // 假定的减字库路径
 std::string db_file = "JianziNote.db";
 
+// 减字
+std::string jianzi_str = "大九挑七";
+
 // 加载减字信息
 Jianzi::OpenDb(db_file.c_str());
 
 // 读取styler列表
 auto styler_names = StylerFromDb::GetStylerList(db_file);
 // 加载第一个styler
+// 可以输入别的笔画粗细，比如: `StylerFromDb styler(0.07f)`
 StylerFromDb styler;
 styler.Load(db_file, styler_names[0]);
 
 // 将一个自然表述字串转化为算式，然后进行解析
-auto jianzi = Jianzi::Parse(Jianzi::ParseNatural(sub_strs[i].c_str()).c_str());
+auto jianzi = Jianzi::Parse(Jianzi::ParseNatural(jianzi_str.c_str()).c_str());
 
 // 获得减字路径描述
 auto path_data = jianzi.RenderPath(styler);
@@ -212,3 +216,6 @@ auto result = renderer.Render(path_data);
 编译器要求C++17，以使用magic_enum的特性。
 
 本项目在MacOS Ventura+Clang 12和Windows 11+MSVC 2019下编译通过。
+
+### 预编译包
+可以在Actions当中找列表的最上方下到最新的成功编译结果。
