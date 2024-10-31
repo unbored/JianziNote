@@ -17,7 +17,6 @@
 #include <stack>
 #include <string>
 
-
 #define JE(key) "json_extract(value, '$." #key "') as " #key
 
 namespace qin
@@ -63,10 +62,12 @@ void Jianzi::OpenDb(const char *file) {
 
   // 优先根据字符长短排序
   auto JianziInfoComp = [](const JianziInfo &j1, const JianziInfo &j2) {
-    if (j1.name.length() != j2.name.length()) {
-      return j1.name.length() > j2.name.length();
+    tiny_utf8::string j1name = j1.name;
+    tiny_utf8::string j2name = j2.name;
+    if (j1name.length() != j2name.length()) {
+      return j1name.length() > j2name.length();
     } else {
-      return j1.name > j2.name;
+      return j1name > j2name;
     }
   };
 
@@ -390,8 +391,7 @@ Jianzi Jianzi::Parse(const char *u8_str) {
 }
 
 std::string Jianzi::ParseNatural(const char *u8_str) {
-  using namespace tiny_utf8;
-
+  using tiny_utf8::string;
   // 初始化输入
   string input(u8_str);
   // 清除所有空格
@@ -417,9 +417,10 @@ std::string Jianzi::ParseNatural(const char *u8_str) {
   auto MarkInput = [&input, &input_marks,
                     &info_list](const std::vector<JianziInfo> &input_list) {
     for (auto &info : input_list) {
-      size_t info_length = info.name.length();
+      string info_name = info.name;
+      size_t info_length = info_name.length();
       // 寻找所有点位
-      auto pos = input.find(info.name);
+      auto pos = input.find(info_name);
       while (pos != input.npos) {
         // 找到一个，先确认所有位置为空
         bool occupied = false;
@@ -431,7 +432,7 @@ std::string Jianzi::ParseNatural(const char *u8_str) {
         }
         if (occupied) {
           // 位置已被占用，寻找下一个
-          pos = input.find(info.name, pos + info_length);
+          pos = input.find(info_name, pos + info_length);
           continue;
         }
         // 标记占用
@@ -440,7 +441,7 @@ std::string Jianzi::ParseNatural(const char *u8_str) {
         }
         info_list[pos] = info;
         // 寻找下一个
-        pos = input.find(info.name, pos + info_length);
+        pos = input.find(info_name, pos + info_length);
       }
     }
   };
