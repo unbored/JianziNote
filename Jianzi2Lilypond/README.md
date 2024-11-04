@@ -18,3 +18,4 @@ jianzi2lilypond <减字库文件> <ly文件>
 
 ## 示例
 `example`目录下的`example.ly`是五线谱的样例模板，可以参照该模板完成乐曲。
+`example_jianpu.txt`是简谱的示例，需要配合`jianpu-ly.py`脚本使用，参见我参与的另一个项目[jianpu-ly](https://github.com/unbored/jianpu-ly/tree/Guqin)，Guqin分支。
