@@ -3,7 +3,9 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-cmake_minimum_required(VERSION 3.7)
+cmake_minimum_required(VERSION 3.21)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 project(JianziNote)
 
@@ -36,3 +38,4 @@ link_directories(
 add_subdirectory(JianziNote)
 add_subdirectory(Jianzi2LaTeX)
 add_subdirectory(Jianzi2Lilypond)
+add_subdirectory(tools/SqliteToCbor)

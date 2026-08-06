@@ -9,11 +9,10 @@
 
 #include <cmath>
 #include <iostream>
-#include <magic_enum.hpp>
+#include <magic_enum/magic_enum.hpp>
 #include <memory>
 
 #include "BoundingBox.hpp"
-
 
 #define JE(key) "json_extract(value, '$." #key "') as " #key
 
@@ -195,8 +194,8 @@ Point2f RotatePoint(const Point2f &pt, const Point2f &base, float angle) {
   return ret;
 }
 
-std::vector<JianziStyler::PathData> StylerFromDb::RenderChar(
-    size_t codepoint) const {
+std::vector<JianziStyler::PathData>
+StylerFromDb::RenderChar(size_t codepoint) const {
   auto path_data = m_font_reader.GetPath(codepoint);
 
   // 进行一个放的缩
@@ -211,8 +210,8 @@ std::vector<JianziStyler::PathData> StylerFromDb::RenderChar(
   return path_data;
 }
 
-std::vector<JianziStyler::PathData> StylerFromDb::RenderPath(
-    const std::vector<Stroke> &strokes) const {
+std::vector<JianziStyler::PathData>
+StylerFromDb::RenderPath(const std::vector<Stroke> &strokes) const {
   std::vector<PathData> ret;
 
   for (auto &s : strokes) {
@@ -333,4 +332,4 @@ void StylerFromDb::ProcessVertex(const StrokeVertex &v, float weight,
   }
 }
 
-}  // namespace qin
+} // namespace qin

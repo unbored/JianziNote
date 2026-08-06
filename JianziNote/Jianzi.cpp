@@ -12,7 +12,7 @@
 #include <cmath>
 #include <functional>
 #include <iostream>
-#include <magic_enum.hpp>
+#include <magic_enum/magic_enum.hpp>
 #include <set>
 #include <stack>
 #include <string>
@@ -301,7 +301,7 @@ Jianzi Jianzi::Parse(const char *u8_str) {
       }
 
       // 处理运算符
-      char32_t c = *sub_pos;  // 当前字符
+      char32_t c = *sub_pos; // 当前字符
 
       if (c == U'(') {
         // 左括号，直接入栈
@@ -542,7 +542,7 @@ std::string Jianzi::ParseNatural(const char *u8_str) {
         ret += "/";
       }
     }
-    prev_type = info_list[pos].type;  // 为下一个字做准备
+    prev_type = info_list[pos].type; // 为下一个字做准备
 
     ret += info_list[pos++].name;
 
@@ -669,7 +669,7 @@ Jianzi Jianzi::operator&(const Jianzi &right) const {
   // 名称：公式
   ret.m_name = "(" + m_name + "&" + right.m_name + ")";
 
-  float border_flag = 0.25f;  // 默认退0.25个
+  float border_flag = 0.25f; // 默认退0.25个
   if (m_border_flags.r != right.m_border_flags.l) {
     // 一方有边界，各退半个笔画宽
     border_flag = 0.5f;
@@ -782,7 +782,7 @@ Jianzi Jianzi::operator<(const Jianzi &right) const {
   // 名称：公式
   ret.m_name = "(" + m_name + "<" + right.m_name + ")";
 
-  float border_flag = 0.25f;  // 默认退0.25个
+  float border_flag = 0.25f; // 默认退0.25个
   if (m_border_flags.r != right.m_border_flags.l) {
     // 一方有边界，各退半个笔画宽
     border_flag = 0.5f;
@@ -837,7 +837,7 @@ Jianzi Jianzi::operator/(const Jianzi &below) const {
 
   // 根据分段数确定是否需要加一个segment
   int add_segment = 0;
-  float border_flag = 0.25f;  // 默认退0.25个
+  float border_flag = 0.25f; // 默认退0.25个
   if (m_border_flags.b != below.m_border_flags.t) {
     // 一方有边界，各退半个笔画宽
     border_flag = 0.5f;
@@ -951,25 +951,25 @@ Jianzi Jianzi::operator*(const Jianzi &content) const {
       s.weight *= weight;
       for (auto &v : s.vertice) {
         switch (v.belong) {
-          case VertexBelong::Top:
-            v.pt.y *= (float)m_v_segments / (float)final_segments;
-            break;
-          case VertexBelong::Bottom:
-            // 上下颠倒后再计算
-            v.pt.y = 1.0f - v.pt.y;
-            v.pt.y *= (float)m_v_segments / (float)final_segments;
-            // 记得倒回来
-            v.pt.y = 1.0f - v.pt.y;
-            break;
-          case VertexBelong::Medium:
-            // 计算中间点坐标
-            // 中间点坐标实际上跟着包围框变化
-            v.pt.y = (v.pt.y - m_capsule->tl.y) /
-                         (m_capsule->br.y - m_capsule->tl.y) * (br.y - tl.y) +
-                     tl.y;
-            break;
-          default:
-            break;
+        case VertexBelong::Top:
+          v.pt.y *= (float)m_v_segments / (float)final_segments;
+          break;
+        case VertexBelong::Bottom:
+          // 上下颠倒后再计算
+          v.pt.y = 1.0f - v.pt.y;
+          v.pt.y *= (float)m_v_segments / (float)final_segments;
+          // 记得倒回来
+          v.pt.y = 1.0f - v.pt.y;
+          break;
+        case VertexBelong::Medium:
+          // 计算中间点坐标
+          // 中间点坐标实际上跟着包围框变化
+          v.pt.y = (v.pt.y - m_capsule->tl.y) /
+                       (m_capsule->br.y - m_capsule->tl.y) * (br.y - tl.y) +
+                   tl.y;
+          break;
+        default:
+          break;
         }
       }
     }
@@ -1067,8 +1067,8 @@ Jianzi Jianzi::operator*(const Jianzi &content) const {
   return ret;
 }
 
-std::vector<JianziStyler::PathData> qin::Jianzi::RenderPath(
-    const JianziStyler &styler) const {
+std::vector<JianziStyler::PathData>
+qin::Jianzi::RenderPath(const JianziStyler &styler) const {
   tiny_utf8::string name = m_name;
   if (name.length() == 2 && name[0] == U'!') {
     return styler.RenderChar(name[1]);
@@ -1078,11 +1078,11 @@ std::vector<JianziStyler::PathData> qin::Jianzi::RenderPath(
   float stroke_width = styler.GetStrokeWidth();
 
   if (m_node) {
-    CollectStrokes(
-        *m_node,
-        BoundingBox{HALF_STROKE_WIDTH, HALF_STROKE_WIDTH,
-                    1.0f - MAX_STROKE_WIDTH, 1.0f - MAX_STROKE_WIDTH},
-        stroke_width, strokes);
+    CollectStrokes(*m_node,
+                   BoundingBox{HALF_STROKE_WIDTH, HALF_STROKE_WIDTH,
+                               1.0f - MAX_STROKE_WIDTH,
+                               1.0f - MAX_STROKE_WIDTH},
+                   stroke_width, strokes);
   }
 
   return styler.RenderPath(strokes);
@@ -1250,4 +1250,4 @@ std::unique_ptr<Jianzi::Node> Jianzi::Node::Clone(const Jianzi::Node &node) {
   return std::move(ret);
 }
 
-}  // namespace qin
+} // namespace qin

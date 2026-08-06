@@ -1,0 +1,4 @@
+build/
+bin/
+!bin/jianzinote.sty
+!bin/JianziNote_SourceHanSerif.db
