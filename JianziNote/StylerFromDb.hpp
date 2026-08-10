@@ -11,6 +11,9 @@
 #include <string>
 #include <vector>
 
+#include <filesystem>
+#include <nlohmann/json.hpp>
+
 #include "FTFontReader.hpp"
 #include "JianziStyler.hpp"
 
@@ -23,8 +26,8 @@ class StylerFromDb : public JianziStyler {
   StylerFromDb(float stroke_width = 0.1f);
   ~StylerFromDb();
 
-  static std::vector<std::string> GetStylerList(std::string db_file);
-  void Load(std::string db_file, std::string styler_name);
+  void LoadCbor(const nlohmann::json& styler,
+                const std::filesystem::path& font_file);
 
   // JianziStyler interface
  public:

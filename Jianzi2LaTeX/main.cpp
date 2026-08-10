@@ -5,7 +5,6 @@
 
 #include <BoundingBox.hpp>
 #include <Jianzi.hpp>
-#include <StylerFromDb.hpp>
 #include <fstream>
 #include <iostream>
 #include <regex>
@@ -26,8 +25,7 @@ using namespace qin;
 enum class ArrayDirection { Vertical, Horizontal };
 
 // 阵列
-std::string ProcessArray(JianziStyler &styler, std::string jianzi_str,
-                         ArrayDirection dir) {
+std::string ProcessArray(std::string jianzi_str, ArrayDirection dir) {
   std::string input_str = jianzi_str;
   // 根据逗号分割字符串
   std::vector<std::string> sub_strs;
@@ -54,7 +52,7 @@ std::string ProcessArray(JianziStyler &styler, std::string jianzi_str,
     // 计算一个减字
     Jianzi jianzi =
         Jianzi::Parse(Jianzi::ParseNatural(sub_strs[i].c_str()).c_str());
-    auto path = jianzi.RenderPath(styler);
+    auto path = jianzi.RenderPath();
 
     // 创建boundingbox，根据boundingbox缩放笔画
     BoundingBox box;
@@ -90,11 +88,11 @@ std::string ProcessArray(JianziStyler &styler, std::string jianzi_str,
 }
 
 // 单字
-std::string ProcessSingle(JianziStyler &styler, std::string jianzi_str) {
+std::string ProcessSingle(std::string jianzi_str) {
   Jianzi jianzi =
       Jianzi::Parse(Jianzi::ParseNatural(jianzi_str.c_str()).c_str());
 
-  auto path_data = jianzi.RenderPath(styler);
+  auto path_data = jianzi.RenderPath();
 
   // 根据path绘制
   qin::TikzRenderer renderer;
@@ -191,10 +189,7 @@ int main(int argc, char **argv) {
   }
 
   // 初始化减字系统
-  qin::Jianzi::OpenDb(db_file.c_str());
-  auto styler_names = qin::StylerFromDb::GetStylerList(db_file);
-  qin::StylerFromDb styler;
-  styler.Load(db_file, styler_names[0]);
+  qin::Jianzi::OpenLibrary(db_file.c_str());
 
   // 根据提取结果输出文件
   std::ofstream fout("jianzilut.sty");
@@ -202,7 +197,7 @@ int main(int argc, char **argv) {
   // 普通减字
   fout << "\\definejianzitikz{" << std::endl;
   for (auto &j : jianzi_str) {
-    fout << "{" << j << "}{" << ProcessSingle(styler, j) << "}" << std::endl;
+    fout << "{" << j << "}{" << ProcessSingle(j) << "}" << std::endl;
   }
   fout << "}" << std::endl;
 
@@ -210,7 +205,7 @@ int main(int argc, char **argv) {
   fout << "\\definejianzitikzv{" << std::endl;
   for (auto &j : jianzi_str_v) {
     fout << "{" << j << "}{"
-         << ProcessArray(styler, j, ArrayDirection::Vertical) << "}"
+         << ProcessArray(j, ArrayDirection::Vertical) << "}"
          << std::endl;
   }
   fout << "}" << std::endl;
@@ -219,7 +214,7 @@ int main(int argc, char **argv) {
   fout << "\\definejianzitikzh{" << std::endl;
   for (auto &j : jianzi_str_h) {
     fout << "{" << j << "}{"
-         << ProcessArray(styler, j, ArrayDirection::Horizontal) << "}"
+         << ProcessArray(j, ArrayDirection::Horizontal) << "}"
          << std::endl;
   }
   fout << "}" << std::endl;

@@ -5,10 +5,9 @@
 
 #include "StylerFromDb.hpp"
 
-#include <SQLiteCpp/SQLiteCpp.h>
-
 #include <cmath>
 #include <iostream>
+#include <fstream>
 #include <magic_enum/magic_enum.hpp>
 #include <memory>
 
@@ -21,6 +20,7 @@ namespace qin {
 StylerFromDb::StylerFromDb(float stroke_width) : c_stroke_width(stroke_width) {}
 StylerFromDb::~StylerFromDb() { m_font_reader.ReleaseFont(); }
 
+#if 0  // Legacy SQLite styler loader; retained only until the migration tool is retired.
 std::vector<std::string> StylerFromDb::GetStylerList(std::string db_file) {
   std::unique_ptr<SQLite::Database> db;
   try {
@@ -161,6 +161,59 @@ void StylerFromDb::Load(std::string db_file, std::string styler_name) {
     std::cout << e.what() << std::endl;
     throw e;
   }
+}
+#endif
+
+void StylerFromDb::LoadCbor(const nlohmann::json& styler,
+                            const std::filesystem::path& font_file) {
+  m_desc_map.clear();
+  for (const auto& item : styler.at("vertices")) {
+    VertexDesc desc;
+    desc.pre_rotate = item.at("pre_rotate").get<float>();
+    desc.dir = magic_enum::enum_cast<RotateDir>(
+                   item.at("direction").get<std::string>())
+                   .value_or(RotateDir::Next);
+    const auto load_groups = [](const nlohmann::json& input) {
+      std::vector<PathGroup> groups;
+      for (const auto& group_data : input) {
+        PathGroup group;
+        group.key = magic_enum::enum_cast<PathKey>(
+                        group_data.at("key").get<std::string>())
+                        .value_or(PathKey::MoveTo);
+        for (const auto& offset_data : group_data.at("offsets")) {
+          group.offsets.push_back(
+              {offset_data.at("x_rel").get<float>(),
+               offset_data.at("x_abs").get<float>(),
+               offset_data.at("y_rel").get<float>(),
+               offset_data.at("y_abs").get<float>(),
+               offset_data.at("x_len").get<float>(),
+               offset_data.at("y_len").get<float>()});
+        }
+        groups.push_back(std::move(group));
+      }
+      return groups;
+    };
+    desc.forward = load_groups(item.at("forward"));
+    desc.backward = load_groups(item.at("backward"));
+    const auto type = magic_enum::enum_cast<VertexType>(
+                          item.at("type").get<std::string>())
+                          .value_or(VertexType::None);
+    m_desc_map[type] = std::move(desc);
+  }
+
+  std::ifstream input(font_file, std::ios::binary);
+  if (!input) {
+    throw std::runtime_error("Unable to open library font: " +
+                             font_file.string());
+  }
+  const auto length = std::filesystem::file_size(font_file);
+  m_font_data = std::make_unique<char[]>(length);
+  input.read(m_font_data.get(), static_cast<std::streamsize>(length));
+  if (!input) {
+    throw std::runtime_error("Unable to read library font: " +
+                             font_file.string());
+  }
+  m_font_reader.LoadFont(m_font_data.get(), length);
 }
 
 const float c_pi = 3.14159f;

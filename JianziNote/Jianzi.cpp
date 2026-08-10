@@ -4,6 +4,8 @@
 // https://opensource.org/licenses/MIT
 
 #include "Jianzi.hpp"
+#include "Cbor.hpp"
+#include "StylerFromDb.hpp"
 
 #include <tinyutf8/tinyutf8.h>
 
@@ -16,12 +18,15 @@
 #include <set>
 #include <stack>
 #include <string>
+#include <filesystem>
 
 #define JE(key) "json_extract(value, '$." #key "') as " #key
 
 namespace qin
 
 {
+
+#if 0  // Legacy SQLite loader retained temporarily as migration reference.
 
 std::unique_ptr<SQLite::Database> Jianzi::s_db;
 std::vector<Jianzi::JianziInfo> Jianzi::s_alias_list;
@@ -171,6 +176,78 @@ Jianzi::Jianzi(const char *u8_ch) {
   }
 }
 
+#endif
+
+nlohmann::json Jianzi::s_library;
+std::unique_ptr<StylerFromDb> Jianzi::s_library_styler;
+std::vector<Jianzi::JianziInfo> Jianzi::s_alias_list;
+std::vector<Jianzi::JianziInfo> Jianzi::s_jianzi_list;
+
+void Jianzi::OpenLibrary(const char* file) {
+  const auto result = cbor::Read(file);
+  if (!result) {
+    throw std::runtime_error(result.error->message);
+  }
+  const auto& library = result.document;
+  if (!library.contains("glyphs") || !library.contains("aliases") ||
+      !library.contains("styler") || !library.contains("font")) {
+    throw std::runtime_error("Invalid Jianzi CBOR library.");
+  }
+  auto styler = std::make_unique<StylerFromDb>();
+  const auto font = std::filesystem::path(file).parent_path() /
+                    library.at("font").at("file").get<std::string>();
+  styler->LoadCbor(library.at("styler"), font);
+
+  s_library = library;
+  s_library_styler = std::move(styler);
+  s_jianzi_list.clear();
+  s_alias_list.clear();
+  for (auto it = s_library["glyphs"].begin(); it != s_library["glyphs"].end(); ++it) {
+    s_jianzi_list.push_back({it.key(), magic_enum::enum_cast<JianziType>(
+        it.value().at("type").get<std::string>()).value_or(JianziType::Other)});
+  }
+  for (const auto& alias : s_library["aliases"]) {
+    s_alias_list.push_back({alias.at("alias").get<std::string>(),
+        magic_enum::enum_cast<JianziType>(alias.at("type").get<std::string>()).value_or(JianziType::Other)});
+  }
+  const auto compare = [](const JianziInfo& a, const JianziInfo& b) {
+    tiny_utf8::string an = a.name, bn = b.name;
+    return an.length() != bn.length() ? an.length() > bn.length() : an > bn;
+  };
+  std::sort(s_jianzi_list.begin(), s_jianzi_list.end(), compare);
+  std::sort(s_alias_list.begin(), s_alias_list.end(), compare);
+}
+
+Jianzi::Jianzi(const char* name) : m_name(name) {
+  if (m_name.empty() || !s_library.contains("glyphs") ||
+      !s_library["glyphs"].contains(m_name)) return;
+  try {
+    const auto& glyph = s_library["glyphs"].at(m_name);
+    const auto& flags = glyph.at("border_flags");
+    m_border_flags = {flags.at("top").get<bool>(), flags.at("bottom").get<bool>(),
+                      flags.at("left").get<bool>(), flags.at("right").get<bool>()};
+    m_v_segments = glyph.at("vertical_segments").get<int>();
+    m_type = magic_enum::enum_cast<JianziType>(glyph.at("type").get<std::string>()).value_or(JianziType::Other);
+    if (glyph.contains("capsule")) {
+      const auto& data = glyph.at("capsule"); const auto& cf = data.at("border_flags");
+      m_capsule = std::make_unique<Capsule>();
+      m_capsule->border_flags = {cf.at("top").get<bool>(), cf.at("bottom").get<bool>(), cf.at("left").get<bool>(), cf.at("right").get<bool>()};
+      m_capsule->v_segments = data.at("vertical_segments").get<int>();
+      m_capsule->tl = {data.at("top_left")[0].get<float>(), data.at("top_left")[1].get<float>()};
+      m_capsule->br = {data.at("bottom_right")[0].get<float>(), data.at("bottom_right")[1].get<float>()};
+    }
+    m_node = std::make_unique<Node>();
+    for (const auto& data : glyph.at("strokes")) {
+      Stroke stroke; stroke.weight = data.at("weight").get<float>();
+      for (const auto& vertex : data.at("vertices")) stroke.vertice.push_back({
+        magic_enum::enum_cast<VertexType>(vertex.at("type").get<std::string>()).value_or(VertexType::None),
+        {vertex.at("x").get<float>(), vertex.at("y").get<float>()},
+        magic_enum::enum_cast<VertexBelong>(vertex.at("belong").get<std::string>()).value_or(VertexBelong::Top)});
+      m_node->strokes.push_back(std::move(stroke));
+    }
+  } catch (const std::exception& error) { std::cout << "Error loading jianzi: " << error.what() << std::endl; *this = Jianzi(); }
+}
+
 Jianzi::Jianzi(const Jianzi &other) { *this = other; }
 
 Jianzi &Jianzi::operator=(const Jianzi &other) {
@@ -272,31 +349,17 @@ Jianzi Jianzi::Parse(const char *u8_str) {
         // 不在字符串开头，先处理值
         string sub = str.substr(0, sub_pos - str.begin());
 
-        // 确认减字存在
-        try {
-          SQLite::Statement jianzi_query(
-              *s_db, ("select 1 from jianzi where name = '" + sub + "' limit 1")
-                         .c_str());
-          if (jianzi_query.executeStep()) {
-            // 减字存在，直接存入
-            values.push(Jianzi(sub.c_str()));
-          } else {
-            SQLite::Statement alias_query(
-                *s_db, ("select jianzi from jianzi_alias where alias = '" +
-                        sub + "' limit 1")
-                           .c_str());
-            if (alias_query.executeStep()) {
-              // 有别名，将别名替换本体后重新检索
-              string alias = alias_query.getColumn("jianzi").getString();
-              // 补个括号，保证正常运行
-              str = "(" + alias + ")" + str.substr(sub_pos - str.begin());
-              continue;
-            } else {
-              // 都找不到，直接返回空
-              return Jianzi();
-            }
+        const std::string name = sub.cpp_str();
+        if (s_library.contains("glyphs") && s_library["glyphs"].contains(name)) {
+          values.push(Jianzi(name.c_str()));
+        } else {
+          std::string glyph;
+          for (const auto& alias : s_library.value("aliases", nlohmann::json::array())) {
+            if (alias.at("alias").get<std::string>() == name) { glyph = alias.at("glyph").get<std::string>(); break; }
           }
-        } catch (...) {
+          if (glyph.empty()) return Jianzi();
+          str = "(" + string(glyph) + ")" + str.substr(sub_pos - str.begin());
+          continue;
         }
       }
 
@@ -1086,6 +1149,11 @@ qin::Jianzi::RenderPath(const JianziStyler &styler) const {
   }
 
   return styler.RenderPath(strokes);
+}
+
+std::vector<JianziStyler::PathData> qin::Jianzi::RenderPath() const {
+  if (!s_library_styler) return {};
+  return RenderPath(*s_library_styler);
 }
 
 const char *Jianzi::GetName() const { return m_name.c_str(); }

@@ -13,7 +13,6 @@ include_directories(
 
 set(MODULE_LIBRARIES
     JianziNote
-    Freetype::Freetype
 )
 
 find_package(tinyutf8 CONFIG REQUIRED)

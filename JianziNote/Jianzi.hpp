@@ -5,17 +5,18 @@
 
 #pragma once
 
-#include <SQLiteCpp/SQLiteCpp.h>
-
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "BoundingBox.hpp"
 #include "JianziDefines.hpp"
 #include "JianziStyler.hpp"
 
 namespace qin {
+class StylerFromDb;
 // 减字统一以1为单位，上下左右各留半个笔画宽度
 class Jianzi {
  public:
@@ -29,8 +30,8 @@ class Jianzi {
 
   Jianzi(const char *u8_ch);
 
-  // 初始化数据库
-  static void OpenDb(const char *file);
+  // 加载单一 CBOR 字形包及其同目录字体。
+  static void OpenLibrary(const char *file);
 
   // 根据公式生成减字。
   // 如“大九挑七”，可写成“(大&九)/(挑*七)”,
@@ -56,6 +57,8 @@ class Jianzi {
 
   std::vector<JianziStyler::PathData> RenderPath(
       const JianziStyler &styler) const;
+  // 使用字形包内置的样式渲染。
+  std::vector<JianziStyler::PathData> RenderPath() const;
 
   // 边界避让标记
   struct BorderFlags {
@@ -74,8 +77,8 @@ class Jianzi {
   int GetSegments() const;
 
  protected:
-  // 数据库
-  static std::unique_ptr<SQLite::Database> s_db;
+  static nlohmann::json s_library;
+  static std::unique_ptr<StylerFromDb> s_library_styler;
 
   std::string m_name;  // 减字名称
   JianziType m_type = JianziType::Other;
