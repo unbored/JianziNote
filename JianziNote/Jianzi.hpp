@@ -32,6 +32,9 @@ class Jianzi {
   // 加载单一 CBOR 字形包及其同目录字体。
   static void OpenLibrary(const char *file);
 
+  // 字形包中定义的笔画种类，顺序与 CBOR 中 stroke_profiles 保持一致。
+  static const std::vector<StrokeProfile> &GetStrokeProfiles();
+
   // 根据公式生成减字。
   // 如“大九挑七”，可写成“(大&九)/(挑*七)”,
   // “散一大七急撮”可写成“急/(撮((大/七)|(散/一2))”
@@ -76,6 +79,7 @@ class Jianzi {
  protected:
   static nlohmann::json s_library;
   static std::unique_ptr<StylerFromDb> s_library_styler;
+  static std::vector<StrokeProfile> s_stroke_profiles;
 
   std::string m_name;  // 减字名称
   JianziType m_type = JianziType::Other;

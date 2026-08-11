@@ -2,6 +2,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -31,7 +32,34 @@ bool WriteDocument(const fs::path& path, const json& document) {
     return true;
 }
 
-json LoadGlyph(SQLite::Database& db, const std::string& name) {
+std::string MatchStrokeProfile(const json& vertices, const json& profiles, const std::string& glyph_name) {
+    const json* match = nullptr;
+    for (const auto& profile : profiles) {
+        const auto& slots = profile.at("slots");
+        if (slots.size() != vertices.size()) {
+            continue;
+        }
+        const bool compatible = std::equal(vertices.begin(), vertices.end(), slots.begin(),
+                                           [](const json& vertex, const json& slot) {
+                                               const auto& types = slot.at("vertex_types");
+                                               return std::find(types.begin(), types.end(), vertex.at("type")) !=
+                                                      types.end();
+                                           });
+        if (!compatible) {
+            continue;
+        }
+        if (match != nullptr) {
+            throw std::runtime_error("Ambiguous stroke profile in glyph: " + glyph_name);
+        }
+        match = &profile;
+    }
+    if (match == nullptr) {
+        throw std::runtime_error("Unable to infer stroke profile in glyph: " + glyph_name);
+    }
+    return match->at("type").get<std::string>();
+}
+
+json LoadGlyph(SQLite::Database& db, const std::string& name, const json& profiles) {
     json glyph = {{"format_version", 1}, {"name", name}};
 
     SQLite::Statement glyph_query(db,
@@ -67,7 +95,9 @@ json LoadGlyph(SQLite::Database& db, const std::string& name) {
                                    "json_extract(value, '$.belong') as region from json_each(?) "
                                    "order by cast(key as integer)");
     while (stroke_query.executeStep()) {
-        json stroke = {{"weight", stroke_query.getColumn("weight").getDouble()}, {"vertices", json::array()}};
+        json stroke = {{"profile", ""},
+                       {"weight", stroke_query.getColumn("weight").getDouble()},
+                       {"vertices", json::array()}};
         vertex_query.reset();
         vertex_query.clearBindings();
         vertex_query.bind(1, stroke_query.getColumn("vertice").getString());
@@ -77,13 +107,14 @@ json LoadGlyph(SQLite::Database& db, const std::string& name) {
                                           {"y", vertex_query.getColumn("y").getDouble()},
                                           {"region", vertex_query.getColumn("region").getString()}});
         }
+        stroke["profile"] = MatchStrokeProfile(stroke["vertices"], profiles, name);
         glyph["strokes"].push_back(std::move(stroke));
     }
     return glyph;
 }
 
 json LoadStyler(SQLite::Database& db, const std::string& name, const std::string& target) {
-    json styler = {{"name", name}, {"vertices", json::array()}};
+    json styler = {{"name", name}, {"vertices", json::array()}, {"stroke_profiles", json::array()}};
     SQLite::Statement query(db, "select type,pre_rotate,dir,forward,backward from " + target + " order by rowid");
     while (query.executeStep()) {
         const std::string forward = query.getColumn("forward").getString();
@@ -95,6 +126,46 @@ json LoadStyler(SQLite::Database& db, const std::string& name, const std::string
                                       {"backward", backward.empty() ? json::array() : json::parse(backward)}});
     }
     return styler;
+}
+
+json LoadStrokeProfiles(SQLite::Database& db) {
+    json profiles = json::array();
+    SQLite::Statement query(db, "select name,vertice,head_list,tail_list from basic_stroke_list order by rowid");
+    while (query.executeStep()) {
+        const auto vertices = json::parse(query.getColumn("vertice").getString());
+        const auto heads = json::parse(query.getColumn("head_list").getString());
+        const auto tails = json::parse(query.getColumn("tail_list").getString());
+        if (!vertices.is_array() || vertices.empty() || !heads.is_array() || !tails.is_array()) {
+            throw std::runtime_error("Invalid basic stroke profile: " + query.getColumn("name").getString());
+        }
+
+        json profile = {{"type", query.getColumn("name").getString()}, {"slots", json::array()}};
+        for (std::size_t index = 0; index < vertices.size(); ++index) {
+            const auto& vertex = vertices.at(index);
+            json types = json::array();
+            const auto append_types = [&types](const json& choices) {
+                for (const auto& choice : choices) {
+                    const auto& type = choice.at("type");
+                    if (std::find(types.begin(), types.end(), type) == types.end()) {
+                        types.push_back(type);
+                    }
+                }
+            };
+            if (index == 0) {
+                append_types(heads);
+            }
+            if (index + 1 == vertices.size()) {
+                append_types(tails);
+            }
+            if (types.empty()) {
+                types.push_back(vertex.at("type"));
+            }
+            profile["slots"].push_back({{"default_pt", {vertex.at("x"), vertex.at("y")}},
+                                        {"vertex_types", std::move(types)}});
+        }
+        profiles.push_back(std::move(profile));
+    }
+    return profiles;
 }
 
 std::string FontExtension(const std::vector<std::uint8_t>& data) {
@@ -116,6 +187,7 @@ int Migrate(const fs::path& source, const fs::path& output) {
 
     SQLite::Database db(source.string(), SQLite::OPEN_READONLY);
     fs::create_directories(output);
+    const json stroke_profiles = LoadStrokeProfiles(db);
 
     json library = {{"format_version", 1},
                     {"package_type", "jianzi-note-library"},
@@ -124,7 +196,7 @@ int Migrate(const fs::path& source, const fs::path& output) {
     SQLite::Statement glyph_list(db, "select name,type from jianzi order by name");
     while (glyph_list.executeStep()) {
         const std::string name = glyph_list.getColumn("name").getString();
-        library["glyphs"][name] = LoadGlyph(db, name);
+        library["glyphs"][name] = LoadGlyph(db, name, stroke_profiles);
     }
 
     SQLite::Statement alias_query(db, "select alias,jianzi,type from jianzi_alias order by rowid");
@@ -165,6 +237,7 @@ int Migrate(const fs::path& source, const fs::path& output) {
     }
     library["font"] = {{"name", font_name}, {"file", font_file}};
     library["styler"] = LoadStyler(db, styler_name, styler_target);
+    library["styler"]["stroke_profiles"] = stroke_profiles;
     if (!WriteDocument(output / "library.cbor", library)) {
         return 1;
     }

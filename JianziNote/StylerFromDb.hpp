@@ -6,9 +6,9 @@
 #ifndef STYLERFROMDB_H
 #define STYLERFROMDB_H
 
-#include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <filesystem>
@@ -41,7 +41,7 @@ class StylerFromDb {
   void ProcessVertex(const StrokeVertex &v, float weight, Direction dir,
                      std::vector<PathData> &path) const;
 
-  std::map<VertexType, VertexDesc> m_desc_map;
+  std::unordered_map<std::string, VertexDesc> m_desc_map;
 
   FTFontReader m_font_reader;
   std::unique_ptr<char[]> m_font_data;

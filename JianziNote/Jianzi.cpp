@@ -17,6 +17,7 @@
 #include <set>
 #include <stack>
 #include <string>
+#include <unordered_set>
 
 #include "Cbor.hpp"
 #include "StylerFromDb.hpp"
@@ -27,8 +28,49 @@ namespace qin
 
 nlohmann::json Jianzi::s_library;
 std::unique_ptr<StylerFromDb> Jianzi::s_library_styler;
+std::vector<StrokeProfile> Jianzi::s_stroke_profiles;
 std::vector<Jianzi::JianziInfo> Jianzi::s_alias_list;
 std::vector<Jianzi::JianziInfo> Jianzi::s_jianzi_list;
+
+namespace {
+
+std::vector<StrokeProfile> ReadStrokeProfiles(const nlohmann::json& styler) {
+    const auto profiles = styler.value("stroke_profiles", nlohmann::json::array());
+    if (!profiles.is_array()) {
+        throw std::runtime_error("styler.stroke_profiles must be an array.");
+    }
+
+    std::unordered_set<std::string> profile_types;
+    std::vector<StrokeProfile> result;
+    result.reserve(profiles.size());
+    for (const auto& data : profiles) {
+        StrokeProfile profile;
+        profile.type = data.at("type").get<std::string>();
+        if (profile.type.empty() || !profile_types.insert(profile.type).second) {
+            throw std::runtime_error("Each stroke profile must have a unique non-empty type.");
+        }
+
+        const auto& slots = data.at("slots");
+        if (!slots.is_array()) {
+            throw std::runtime_error("stroke profile slots must be an array.");
+        }
+        profile.slots.reserve(slots.size());
+        for (const auto& slot_data : slots) {
+            const auto& default_pt = slot_data.at("default_pt");
+            if (!default_pt.is_array() || default_pt.size() != 2) {
+                throw std::runtime_error("stroke profile slot default_pt must contain two values.");
+            }
+            StrokeProfileSlot slot;
+            slot.default_pt = {default_pt.at(0).get<float>(), default_pt.at(1).get<float>()};
+            slot.vertex_types = slot_data.at("vertex_types").get<std::vector<std::string>>();
+            profile.slots.push_back(std::move(slot));
+        }
+        result.push_back(std::move(profile));
+    }
+    return result;
+}
+
+}  // namespace
 
 void Jianzi::OpenLibrary(const char* file) {
     const auto result = cbor::Read(file);
@@ -40,12 +82,14 @@ void Jianzi::OpenLibrary(const char* file) {
         !library.contains("font")) {
         throw std::runtime_error("Invalid Jianzi CBOR library.");
     }
+    const auto stroke_profiles = ReadStrokeProfiles(library.at("styler"));
     auto styler = std::make_unique<StylerFromDb>();
     const auto font = std::filesystem::path(file).parent_path() / library.at("font").at("file").get<std::string>();
     styler->LoadCbor(library.at("styler"), font);
 
     s_library = library;
     s_library_styler = std::move(styler);
+    s_stroke_profiles = stroke_profiles;
     s_jianzi_list.clear();
     s_alias_list.clear();
     for (auto it = s_library["glyphs"].begin(); it != s_library["glyphs"].end(); ++it) {
@@ -65,6 +109,8 @@ void Jianzi::OpenLibrary(const char* file) {
     std::sort(s_jianzi_list.begin(), s_jianzi_list.end(), compare);
     std::sort(s_alias_list.begin(), s_alias_list.end(), compare);
 }
+
+const std::vector<StrokeProfile>& Jianzi::GetStrokeProfiles() { return s_stroke_profiles; }
 
 Jianzi::Jianzi(const char* name) : m_name(name) {
     if (m_name.empty() || !s_library.contains("glyphs") || !s_library["glyphs"].contains(m_name)) return;
@@ -88,10 +134,11 @@ Jianzi::Jianzi(const char* name) : m_name(name) {
         m_node = std::make_unique<Node>();
         for (const auto& data : glyph.at("strokes")) {
             Stroke stroke;
+            stroke.profile = data.value("profile", std::string{});
             stroke.weight = data.at("weight").get<float>();
             for (const auto& vertex : data.at("vertices"))
                 stroke.vertice.push_back(
-                    {magic_enum::enum_cast<VertexType>(vertex.at("type").get<std::string>()).value_or(VertexType::None),
+                    {vertex.at("type").get<std::string>(),
                      {vertex.at("x").get<float>(), vertex.at("y").get<float>()},
                      magic_enum::enum_cast<VertexRegion>(vertex.at("region").get<std::string>())
                          .value_or(VertexRegion::Top)});

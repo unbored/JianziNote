@@ -8,6 +8,7 @@
 #include <cmath>
 #include <fstream>
 #include <magic_enum/magic_enum.hpp>
+#include <stdexcept>
 
 #include "BoundingBox.hpp"
 
@@ -20,6 +21,7 @@ void StylerFromDb::LoadCbor(const nlohmann::json& styler, const std::filesystem:
     m_desc_map.clear();
     for (const auto& item : styler.at("vertices")) {
         VertexDesc desc;
+        desc.type = item.at("type").get<std::string>();
         desc.pre_rotate = item.at("pre_rotate").get<float>();
         desc.dir = magic_enum::enum_cast<RotateDir>(item.at("direction").get<std::string>()).value_or(RotateDir::Next);
         const auto load_groups = [](const nlohmann::json& input) {
@@ -40,9 +42,10 @@ void StylerFromDb::LoadCbor(const nlohmann::json& styler, const std::filesystem:
         };
         desc.forward = load_groups(item.at("forward"));
         desc.backward = load_groups(item.at("backward"));
-        const auto type =
-            magic_enum::enum_cast<VertexType>(item.at("type").get<std::string>()).value_or(VertexType::None);
-        m_desc_map[type] = std::move(desc);
+        const auto [it, inserted] = m_desc_map.emplace(desc.type, std::move(desc));
+        if (!inserted) {
+            throw std::runtime_error("Duplicate VertexDesc type: " + it->first);
+        }
     }
 
     std::ifstream input(font_file, std::ios::binary);
@@ -112,7 +115,7 @@ std::vector<PathData> StylerFromDb::RenderPath(const std::vector<Stroke>& stroke
             // 只有一个顶点，为了处理angle和length的问题，添加一个占位
             auto vertice = s.vertice;
             StrokeVertex vert;
-            vert.type = VertexType::None;
+            vert.type = "None";
             vert.pt = Point2f{0, 0};
             vert.region = VertexRegion::Top;
             vertice.push_back(vert);
@@ -142,13 +145,11 @@ float StylerFromDb::GetStrokeWidth() const { return c_stroke_width; }
 void StylerFromDb::ProcessVertex(const StrokeVertex& v, float weight, Direction dir,
                                  std::vector<PathData>& path) const {
     // 根据方向加载描述
-    VertexDesc desc;
-    try {
-        desc = m_desc_map.at(v.type);
-    } catch (...) {
-        // 没有数据，返回
+    const auto it = m_desc_map.find(v.type);
+    if (it == m_desc_map.end()) {
         return;
     }
+    const VertexDesc& desc = it->second;
     auto& groups = (dir == Direction::Forward) ? desc.forward : desc.backward;
     // 无点可算
     if (groups.empty()) {
