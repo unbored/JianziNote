@@ -10,20 +10,20 @@
 - 减字名称使用utf8编码的中文字符，无需额外记忆符号；
 - 根据汉字框架结构特点均匀横画间隔，使减字间架比例自然；
 - 自动计算笔画粗细权重，使笔画粗细自然；
-- 配合不同的Styler可实现不同风格的字形输出；
+- 使用字库内置的笔画描述生成字形输出；
 - 输出矢量描述，可开发不同输出端提供不同平台的功能包或插件，如LaTeX、Lilypond等；
 
 ## 使用
 
 ### 减字库
 
-`Jianzi.hpp`使用SQLite储存已定义的减字名称和框架信息，即为减字库。只有框架信息的减字库无法直接使用，需要配合减字风格库。`SkeletonStyler.hpp`为仅将关键控制点进行连线的风格库。
+`Jianzi.hpp`从单一 CBOR 字库包读取已定义的减字、笔画描述和配套字体，并直接生成路径。
 
 JianziNote项目内部统一使用以左上角为(0,0)、右下角为(1,1)的归一化坐标。
 
 ### 减字风格
 
-`JianziStyler.hpp`定义了基本的减字风格所需的信息，`StylerFromDb.hpp`则为使用SQLite储存减字信息的Styler实现，即减字风格库。
+笔画描述作为字库的一部分加载；`StylerFromDb.hpp`是其内部的 CBOR 读取与路径展开实现。
 
 `bin`目录内提供基于“思源宋体”旧字形风格开发的减字库，可直接使用。出于外观风格统一等方面考虑，并未开放该减字库的开发工具，有添加减字的需求可提issue。目前支持的基础减字及预览如下：
 
@@ -158,7 +158,7 @@ JianziNote项目内部统一使用以左上角为(0,0)、右下角为(1,1)的归
 
 ### 输出描述
 
-`JianziStyler.hpp`定义了输出的通用矢量描述方式，即以`MoveTo`、`LineTo`、`QuadTo`、`CubicTo`和`Close`为关键字的列表，以及对应的点坐标列表。此描述方式方便对接到Cairo、Skia、LaTeX、Lilypond等不同的应用当中。
+`JianziDefines.hpp`定义了输出的通用矢量描述方式，即以`MoveTo`、`LineTo`、`QuadTo`、`CubicTo`和`Close`为关键字的列表，以及对应的点坐标列表。此描述方式方便对接到Cairo、Skia、LaTeX、Lilypond等不同的应用当中。
 
 具体实现示例见Jianzi2LaTeX和Jianzi2Lilypond等子项目。
 
@@ -166,7 +166,6 @@ JianziNote项目内部统一使用以左上角为(0,0)、右下角为(1,1)的归
 
 ```cpp
 #include <Jianzi.hpp>
-#include <StylerFromDb.hpp>
 #include <string>
 
 // 假定的某个绘制矢量路径的renderer
@@ -175,26 +174,19 @@ JianziNote项目内部统一使用以左上角为(0,0)、右下角为(1,1)的归
 using namespace qin;
 
 // 假定的减字库路径
-std::string db_file = "JianziNote.db";
+std::string library_file = "library.cbor";
 
 // 减字
 std::string jianzi_str = "大九挑七";
 
-// 加载减字信息
-Jianzi::OpenDb(db_file.c_str());
-
-// 读取styler列表
-auto styler_names = StylerFromDb::GetStylerList(db_file);
-// 加载第一个styler
-// 可以输入别的笔画粗细，比如: `StylerFromDb styler(0.07f)`
-StylerFromDb styler;
-styler.Load(db_file, styler_names[0]);
+// 加载减字、笔画描述和配套字体
+Jianzi::OpenLibrary(library_file.c_str());
 
 // 将一个自然表述字串转化为算式，然后进行解析
 auto jianzi = Jianzi::Parse(Jianzi::ParseNatural(jianzi_str.c_str()).c_str());
 
 // 获得减字路径描述
-auto path_data = jianzi.RenderPath(styler);
+auto path_data = jianzi.RenderPath();
 
 // 进行路径绘制
 SomeRenderer renderer;
@@ -207,8 +199,6 @@ auto result = renderer.Render(path_data);
 
 - [tiny-utf8](https://github.com/DuffsDevice/tiny-utf8)
 - [magic_enum](https://github.com/Neargye/magic_enum)
-- [SQlite3](https://www.sqlite.org/index.html)
-- [SQLiteCpp](https://github.com/SRombauts/SQLiteCpp)
 - [FreeType2](https://freetype.org/)
 
 ### 兼容性

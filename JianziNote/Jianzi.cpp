@@ -1130,15 +1130,15 @@ Jianzi Jianzi::operator*(const Jianzi &content) const {
   return ret;
 }
 
-std::vector<JianziStyler::PathData>
-qin::Jianzi::RenderPath(const JianziStyler &styler) const {
+std::vector<PathData> qin::Jianzi::RenderPath() const {
+  if (!s_library_styler) return {};
   tiny_utf8::string name = m_name;
   if (name.length() == 2 && name[0] == U'!') {
-    return styler.RenderChar(name[1]);
+    return s_library_styler->RenderChar(name[1]);
   }
   std::vector<Stroke> strokes;
 
-  float stroke_width = styler.GetStrokeWidth();
+  float stroke_width = s_library_styler->GetStrokeWidth();
 
   if (m_node) {
     CollectStrokes(*m_node,
@@ -1148,12 +1148,7 @@ qin::Jianzi::RenderPath(const JianziStyler &styler) const {
                    stroke_width, strokes);
   }
 
-  return styler.RenderPath(strokes);
-}
-
-std::vector<JianziStyler::PathData> qin::Jianzi::RenderPath() const {
-  if (!s_library_styler) return {};
-  return RenderPath(*s_library_styler);
+  return s_library_styler->RenderPath(strokes);
 }
 
 const char *Jianzi::GetName() const { return m_name.c_str(); }

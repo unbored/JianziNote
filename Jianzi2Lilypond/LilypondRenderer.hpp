@@ -1,6 +1,6 @@
 #pragma once
 
-#include <JianziStyler.hpp>
+#include <JianziDefines.hpp>
 #include <string>
 
 namespace qin
@@ -12,7 +12,7 @@ public:
     LilypondRenderer();
 
 public:
-    std::string Render(const std::vector<qin::JianziStyler::PathData> &path_data);
+    std::string Render(const std::vector<qin::PathData> &path_data);
 };
 
 } // namespace qin

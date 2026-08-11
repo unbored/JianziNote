@@ -6,7 +6,7 @@
 #ifndef TIKZRENDERER_HPP
 #define TIKZRENDERER_HPP
 
-#include <JianziStyler.hpp>
+#include <JianziDefines.hpp>
 #include <string>
 
 namespace qin {
@@ -17,7 +17,7 @@ class TikzRenderer {
   ~TikzRenderer() = default;
 
  public:
-  std::string Render(const std::vector<qin::JianziStyler::PathData> &path_data);
+  std::string Render(const std::vector<qin::PathData> &path_data);
 };
 
 }  // namespace qin

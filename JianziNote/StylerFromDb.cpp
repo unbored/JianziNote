@@ -247,7 +247,7 @@ Point2f RotatePoint(const Point2f &pt, const Point2f &base, float angle) {
   return ret;
 }
 
-std::vector<JianziStyler::PathData>
+std::vector<PathData>
 StylerFromDb::RenderChar(size_t codepoint) const {
   auto path_data = m_font_reader.GetPath(codepoint);
 
@@ -263,7 +263,7 @@ StylerFromDb::RenderChar(size_t codepoint) const {
   return path_data;
 }
 
-std::vector<JianziStyler::PathData>
+std::vector<PathData>
 StylerFromDb::RenderPath(const std::vector<Stroke> &strokes) const {
   std::vector<PathData> ret;
 

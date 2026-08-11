@@ -10,6 +10,44 @@
 #include "Point.hpp"
 
 namespace qin {
+// 通用路径描述。渲染器可直接消费该格式，不依赖减字的加载或绘制实现。
+enum class PathKey {
+  Close,
+  MoveTo,
+  LineTo,
+  QuadTo,
+  CubicTo,
+};
+
+struct PathData {
+  PathKey key = PathKey::Close;
+  std::vector<Point2f> pts;
+};
+
+enum class RotateDir { Prev, Next };
+
+struct PathOffset {
+  float x_rel;
+  float x_abs;
+  float y_rel;
+  float y_abs;
+  float x_len;
+  float y_len;
+};
+
+struct PathGroup {
+  PathKey key;
+  std::vector<PathOffset> offsets;
+};
+
+// VertexType 对应的一套路径展开规则。
+struct VertexDesc {
+  float pre_rotate;
+  RotateDir dir;
+  std::vector<PathGroup> forward;
+  std::vector<PathGroup> backward;
+};
+
 // 最大笔画宽度
 // 此为极限值，并不会有笔画到达此宽度，用于分隔不同笔画
 constexpr float MAX_STROKE_WIDTH = 0.14f;

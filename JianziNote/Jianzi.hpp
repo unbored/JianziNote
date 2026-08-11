@@ -13,7 +13,6 @@
 
 #include "BoundingBox.hpp"
 #include "JianziDefines.hpp"
-#include "JianziStyler.hpp"
 
 namespace qin {
 class StylerFromDb;
@@ -55,10 +54,8 @@ class Jianzi {
   // 对于带空间的减字，则是将指定减字放入填充空间内
   Jianzi operator*(const Jianzi &content) const;
 
-  std::vector<JianziStyler::PathData> RenderPath(
-      const JianziStyler &styler) const;
   // 使用字形包内置的样式渲染。
-  std::vector<JianziStyler::PathData> RenderPath() const;
+  std::vector<PathData> RenderPath() const;
 
   // 边界避让标记
   struct BorderFlags {

@@ -9,6 +9,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 project(JianziNote)
 
+include(CTest)
+
 # vs需要配置unicode以正确处理汉字
 if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   add_definitions(-DUNICODE -D_UNICODE)
@@ -38,4 +40,5 @@ link_directories(
 add_subdirectory(JianziNote)
 add_subdirectory(Jianzi2LaTeX)
 add_subdirectory(Jianzi2Lilypond)
+add_subdirectory(Jianzi2Svg)
 add_subdirectory(tools/SqliteToCbor)

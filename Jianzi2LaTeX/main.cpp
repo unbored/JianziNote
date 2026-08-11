@@ -46,7 +46,7 @@ std::string ProcessArray(std::string jianzi_str, ArrayDirection dir) {
     sub_w = 0.5f;
   }
 
-  std::vector<JianziStyler::PathData> path_data;
+  std::vector<PathData> path_data;
 
   for (int i = 0; i < sub_strs.size(); ++i) {
     // 计算一个减字

@@ -8,21 +8,21 @@
 namespace qin {
 
 std::string TikzRenderer::Render(
-    const std::vector<JianziStyler::PathData> &path_data) {
+    const std::vector<PathData> &path_data) {
   std::string ret;
 
   // 注意y轴转换
   for (auto &p : path_data) {
     switch (p.key) {
-      case JianziStyler::PathKey::MoveTo:
+      case PathKey::MoveTo:
         ret += " (" + std::to_string(p.pts[0].x) + "," +
                std::to_string(1.0f - p.pts[0].y) + ")";
         break;
-      case JianziStyler::PathKey::LineTo:
+      case PathKey::LineTo:
         ret += " -- (" + std::to_string(p.pts[0].x) + "," +
                std::to_string(1.0f - p.pts[0].y) + ")";
         break;
-      case JianziStyler::PathKey::QuadTo: {
+      case PathKey::QuadTo: {
         // Tikz不提供二阶曲线的命令，升成三阶
         // 需要获得前一个路径点的最后一个点
         Point2f pt0 = (&p)[-1].pts.back();
@@ -35,7 +35,7 @@ std::string TikzRenderer::Render(
                ")" + " .. (" + std::to_string(pt3.x) + "," +
                std::to_string(1.0f - pt3.y) + ")";
       } break;
-      case JianziStyler::PathKey::CubicTo:
+      case PathKey::CubicTo:
         ret += " .. controls (" + std::to_string(p.pts[0].x) + "," +
                std::to_string(1.0f - p.pts[0].y) + ")" + " and (" +
                std::to_string(p.pts[1].x) + "," +
@@ -43,7 +43,7 @@ std::string TikzRenderer::Render(
                std::to_string(p.pts[2].x) + "," +
                std::to_string(1.0f - p.pts[2].y) + ")";
         break;
-      case JianziStyler::PathKey::Close:
+      case PathKey::Close:
         ret += " -- cycle";
       default:
         break;

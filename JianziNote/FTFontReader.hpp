@@ -9,7 +9,7 @@
 
 #include <vector>
 
-#include "JianziStyler.hpp"
+#include "JianziDefines.hpp"
 #include FT_FREETYPE_H
 
 namespace qin {
@@ -21,7 +21,7 @@ class FTFontReader {
   void ReleaseFont();
 
   // 获得指定code的pathdata
-  std::vector<JianziStyler::PathData> GetPath(size_t codepoint) const;
+  std::vector<PathData> GetPath(size_t codepoint) const;
 
  private:
   FT_Library m_library = nullptr;
