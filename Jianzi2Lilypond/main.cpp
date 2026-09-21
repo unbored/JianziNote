@@ -25,7 +25,8 @@ using namespace qin;
 enum class ArrayDirection { Vertical, Horizontal };
 
 // 阵列
-std::string ProcessArray(std::string jianzi_str, ArrayDirection dir) {
+std::string ProcessArray(const JianziLibrary &library, std::string jianzi_str,
+                         ArrayDirection dir) {
   std::string input_str = jianzi_str;
   // 根据逗号分割字符串
   std::vector<std::string> sub_strs;
@@ -51,7 +52,7 @@ std::string ProcessArray(std::string jianzi_str, ArrayDirection dir) {
   for (int i = 0; i < sub_strs.size(); ++i) {
     // 计算一个减字
     Jianzi jianzi =
-        Jianzi::Parse(Jianzi::ParseNatural(sub_strs[i].c_str()).c_str());
+        library.Parse(library.ParseNatural(sub_strs[i].c_str()).c_str());
     auto path = jianzi.RenderPath();
 
     // 创建boundingbox，根据boundingbox缩放笔画
@@ -94,9 +95,9 @@ std::string ProcessArray(std::string jianzi_str, ArrayDirection dir) {
 }
 
 // 单字
-std::string ProcessSingle(std::string jianzi_str) {
+std::string ProcessSingle(const JianziLibrary &library, std::string jianzi_str) {
   Jianzi jianzi =
-      Jianzi::Parse(Jianzi::ParseNatural(jianzi_str.c_str()).c_str());
+      library.Parse(library.ParseNatural(jianzi_str.c_str()).c_str());
 
   auto path_data = jianzi.RenderPath();
 
@@ -198,24 +199,24 @@ int main(int argc, char **argv) {
   }
 
   // 初始化减字系统
-  qin::Jianzi::OpenLibrary(db_file.c_str());
+  auto library = qin::JianziLibrary::LoadFile(db_file);
 
   // 根据提取结果输出文件
   std::ofstream fout("jianzidef.ly");
   fout << "jianziSize = #'(4 . 4)" << std::endl;
   for (auto &j : jianzi_str) {
     // 普通减字
-    fout << "\"jz:" << j << "\" = " << ProcessSingle(j);
+    fout << "\"jz:" << j << "\" = " << ProcessSingle(library, j);
   }
   for (auto &j : jianzi_str_v) {
     // 竖排小字
     fout << "\"jzv:" << j
-         << "\" = " << ProcessArray(j, ArrayDirection::Vertical);
+         << "\" = " << ProcessArray(library, j, ArrayDirection::Vertical);
   }
   for (auto &j : jianzi_str_h) {
     // 横排小字
     fout << "\"jzh:" << j
-         << "\" = " << ProcessArray(j, ArrayDirection::Horizontal);
+         << "\" = " << ProcessArray(library, j, ArrayDirection::Horizontal);
   }
   fout.close();
 

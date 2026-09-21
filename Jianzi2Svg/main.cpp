@@ -52,9 +52,9 @@ int main(int argc, char** argv) {
   }
 
   try {
-    qin::Jianzi::OpenLibrary(arguments[1].c_str());
-    const auto formula = qin::Jianzi::ParseNatural(arguments[2].c_str());
-    const auto jianzi = qin::Jianzi::Parse(formula.c_str());
+    auto library = qin::JianziLibrary::LoadFile(arguments[1]);
+    const auto formula = library.ParseNatural(arguments[2].c_str());
+    const auto jianzi = library.Parse(formula.c_str());
     const auto svg = qin::SvgRenderer().Render(jianzi.RenderPath());
 
     std::ofstream output(arguments[3], std::ios::binary);

@@ -47,4 +47,13 @@ if(BUILD_TESTING)
     target_link_libraries(stroke-desc-runtime-test PRIVATE JianziNote)
     target_include_directories(stroke-desc-runtime-test PRIVATE ${PROJECT_SOURCE_DIR}/JianziNote)
     add_test(NAME stroke_desc_runtime COMMAND stroke-desc-runtime-test)
+
+    add_executable(jianzi-instance-test tests/JianziInstanceTest.cpp)
+    target_link_libraries(jianzi-instance-test PRIVATE JianziNote)
+    target_include_directories(jianzi-instance-test PRIVATE ${PROJECT_SOURCE_DIR}/JianziNote)
+    if(EXISTS "${JIANZINOTE_V2_TEST_LIBRARY}")
+        add_test(
+            NAME jianzi_instance
+            COMMAND jianzi-instance-test ${JIANZINOTE_V2_TEST_LIBRARY} ${JIANZINOTE_V2_TEST_TEXT})
+    endif()
 endif()

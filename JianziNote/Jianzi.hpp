@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,28 +15,17 @@
 
 namespace qin {
 class StrokeDescRenderer;
+class JianziLibrary;
+struct JianziContext;
+
 // 减字统一以1为单位，上下左右各留半个笔画宽度
 class Jianzi {
  public:
-  Jianzi() = default;
-
   Jianzi(const Jianzi &other);
   Jianzi &operator=(const Jianzi &other);
 
-  Jianzi(Jianzi &&other) = default;
-  Jianzi &operator=(Jianzi &&other) = default;
-
-  Jianzi(const char *u8_ch);
-
-  // 加载单一 CBOR 字形包及其同目录字体。
-  static void OpenLibrary(const char *file);
-
-  // 根据公式生成减字。
-  // 如“大九挑七”，可写成“(大&九)/(挑*七)”,
-  // “散一大七急撮”可写成“急/(撮((大/七)|(散/一2))”
-  static Jianzi Parse(const char *u8_str);
-  // 根据自然字串生成公式
-  static std::string ParseNatural(const char *u8_str);
+  Jianzi(Jianzi &&other) noexcept;
+  Jianzi &operator=(Jianzi &&other);
 
   // 将两个减字横向合并，均分左右
   Jianzi operator&(const Jianzi &right) const;
@@ -73,8 +63,6 @@ class Jianzi {
 
  protected:
   struct LibraryData;
-  static std::unique_ptr<LibraryData> s_library;
-  static std::unique_ptr<StrokeDescRenderer> s_renderer;
 
   struct Layout {
     float units_per_em = 1000.0f;
@@ -89,8 +77,6 @@ class Jianzi {
     float capsule_weight_area = 0.5f;
     float capsule_weight_base = 0.5f;
   };
-  static Layout s_layout;
-
   std::string m_name;  // 减字名称
   JianziType m_type = JianziType::Other;
 
@@ -146,24 +132,58 @@ class Jianzi {
     std::string name;
     JianziType type;
   };
-  static std::vector<JianziInfo> s_alias_list;
-  static std::vector<JianziInfo> s_jianzi_list;
 
- protected:
+ private:
+  friend class JianziLibrary;
+  friend struct JianziContext;
+
+  explicit Jianzi(const JianziContext &context);
+  Jianzi(const JianziContext &context, const char *u8_ch);
+  void CheckContext(const Jianzi &other) const;
+  void CopyData(const Jianzi &other);
+  void MoveData(Jianzi &&other);
+
+  const JianziContext &m_context;
+
   // 递归获取所有笔画
-  static void CollectStrokes(const Node &node, const BoundingBox &parent_box,
-                             float inherited_weight, std::vector<Stroke> &strokes);
-  static BoundingBox TightBoundingBox(const Node &node);
-  static float LayerWeight(const Node &node);
-  static float MaximumStrokeWidth(const Node &node, float inherited_weight = 1.0f);
+  void CollectStrokes(const Node &node, const BoundingBox &parent_box,
+                      float inherited_weight, std::vector<Stroke> &strokes) const;
+  BoundingBox TightBoundingBox(const Node &node) const;
+  float LayerWeight(const Node &node) const;
+  float MaximumStrokeWidth(const Node &node, float inherited_weight = 1.0f) const;
   static float NodeArea(const Node &node);
   static float RecordLayerRatio(Node &node, float before_area);
   static void PlaceBody(Node &node, bool horizontal, float start, float body_size,
                         float fixed_start = 0, float fixed_end = 0);
   static float SkeletonVerticalCenter(const Node &node);
   static void PlaceZeroSegmentCenter(Node &node, float target);
-  static FixedInsets Normalize(Node &node, NormalizeDirection dir);
+  FixedInsets Normalize(Node &node, NormalizeDirection dir) const;
   static void NormalizeFunc(Node &node, const BoundingBox &box);
+};
+
+// 字库实例独占所有加载后的数据及渲染状态。由它生成的 Jianzi
+// 只借用该状态，因此 JianziLibrary 必须比所有相关 Jianzi 活得更久。
+class JianziLibrary {
+ public:
+  ~JianziLibrary();
+
+  JianziLibrary(const JianziLibrary &) = delete;
+  JianziLibrary &operator=(const JianziLibrary &) = delete;
+
+  JianziLibrary(JianziLibrary &&other) noexcept;
+  JianziLibrary &operator=(JianziLibrary &&other) noexcept;
+
+  static JianziLibrary LoadFile(const std::filesystem::path &file);
+
+  // 根据公式生成减字。
+  Jianzi Parse(const char *u8_str) const;
+  // 根据自然字串生成公式。
+  std::string ParseNatural(const char *u8_str) const;
+
+ private:
+  explicit JianziLibrary(std::unique_ptr<JianziContext> context);
+
+  std::unique_ptr<JianziContext> m_context;
 };
 
 }  // namespace qin

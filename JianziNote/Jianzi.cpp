@@ -13,9 +13,11 @@
 #include <functional>
 #include <limits>
 #include <magic_enum/magic_enum.hpp>
+#include <memory>
 #include <optional>
 #include <set>
 #include <stack>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -39,11 +41,13 @@ struct Jianzi::LibraryData {
     std::unordered_map<std::string, std::string> aliases;
 };
 
-std::unique_ptr<Jianzi::LibraryData> Jianzi::s_library;
-std::unique_ptr<StrokeDescRenderer> Jianzi::s_renderer;
-Jianzi::Layout Jianzi::s_layout;
-std::vector<Jianzi::JianziInfo> Jianzi::s_alias_list;
-std::vector<Jianzi::JianziInfo> Jianzi::s_jianzi_list;
+struct JianziContext {
+    Jianzi::LibraryData m_library;
+    std::unique_ptr<StrokeDescRenderer> m_renderer;
+    Jianzi::Layout m_layout;
+    std::vector<Jianzi::JianziInfo> m_aliasList;
+    std::vector<Jianzi::JianziInfo> m_jianziList;
+};
 
 namespace {
 
@@ -54,7 +58,7 @@ bool Flag(const nlohmann::json& flags, const char* long_name, const char* short_
 
 }  // namespace
 
-void Jianzi::OpenLibrary(const char* file) {
+JianziLibrary JianziLibrary::LoadFile(const std::filesystem::path& file) {
     const auto result = cbor::Read(file);
     if (!result) {
         throw std::runtime_error(result.error->message);
@@ -67,7 +71,7 @@ void Jianzi::OpenLibrary(const char* file) {
     }
     auto renderer = std::make_unique<StrokeDescRenderer>(library.at("stroke_descs"));
 
-    Layout layout;
+    Jianzi::Layout layout;
     if (const auto found = library.find("layout"); found != library.end() && found->is_object()) {
         layout.units_per_em = found->value("units_per_em", layout.units_per_em);
         layout.baseline_y = found->value("baseline_y", layout.baseline_y);
@@ -107,9 +111,9 @@ void Jianzi::OpenLibrary(const char* file) {
         throw std::runtime_error("layout.composition.border_width must be finite.");
     }
 
-    auto data = std::make_unique<LibraryData>();
+    auto context = std::make_unique<JianziContext>();
     for (auto source = library.at("glyphs").begin(); source != library.at("glyphs").end(); ++source) {
-        LibraryData::Glyph glyph;
+        Jianzi::LibraryData::Glyph glyph;
         glyph.type = magic_enum::enum_cast<JianziType>(source.value().at("type").get<std::string>())
                          .value_or(JianziType::Other);
         const auto& flags = source.value().at("border_flags");
@@ -117,7 +121,7 @@ void Jianzi::OpenLibrary(const char* file) {
                               Flag(flags, "left", "l"), Flag(flags, "right", "r")};
         glyph.vertical_segments = source.value().at("vertical_segments").get<int>();
         if (const auto capsule = source.value().find("capsule"); capsule != source.value().end()) {
-            Capsule compiled;
+            Jianzi::Capsule compiled;
             const auto& capsule_flags = capsule->at("border_flags");
             compiled.border_flags = {Flag(capsule_flags, "top", "t"), Flag(capsule_flags, "bottom", "b"),
                                      Flag(capsule_flags, "left", "l"), Flag(capsule_flags, "right", "r")};
@@ -143,40 +147,49 @@ void Jianzi::OpenLibrary(const char* file) {
             }
             glyph.strokes.push_back(std::move(stroke));
         }
-        if (!data->glyphs.emplace(source.key(), std::move(glyph)).second) {
+        if (!context->m_library.glyphs.emplace(source.key(), std::move(glyph)).second) {
             throw std::runtime_error("Duplicate glyph name: " + source.key());
         }
     }
 
-    s_jianzi_list.clear();
-    s_alias_list.clear();
-    for (const auto& [name, glyph] : data->glyphs) {
-        s_jianzi_list.push_back({name, glyph.type});
+    for (const auto& [name, glyph] : context->m_library.glyphs) {
+        context->m_jianziList.push_back({name, glyph.type});
     }
     for (const auto& alias : library.value("aliases", nlohmann::json::array())) {
         const auto name = alias.at("alias").get<std::string>();
         const auto target = alias.at("glyph").get<std::string>();
-        if (name.empty() || target.empty() || !data->aliases.emplace(name, target).second) {
+        if (name.empty() || target.empty() || !context->m_library.aliases.emplace(name, target).second) {
             throw std::runtime_error("Alias names and targets must be non-empty and names must be unique.");
         }
-        s_alias_list.push_back({name, magic_enum::enum_cast<JianziType>(alias.value("type", std::string{"Other"}))
-                                         .value_or(JianziType::Other)});
+        context->m_aliasList.push_back(
+            {name, magic_enum::enum_cast<JianziType>(alias.value("type", std::string{"Other"}))
+                       .value_or(JianziType::Other)});
     }
-    const auto compare = [](const JianziInfo& a, const JianziInfo& b) {
+    const auto compare = [](const Jianzi::JianziInfo& a, const Jianzi::JianziInfo& b) {
         tiny_utf8::string an = a.name, bn = b.name;
         return an.length() != bn.length() ? an.length() > bn.length() : an > bn;
     };
-    std::sort(s_jianzi_list.begin(), s_jianzi_list.end(), compare);
-    std::sort(s_alias_list.begin(), s_alias_list.end(), compare);
-    s_library = std::move(data);
-    s_renderer = std::move(renderer);
-    s_layout = layout;
+    std::sort(context->m_jianziList.begin(), context->m_jianziList.end(), compare);
+    std::sort(context->m_aliasList.begin(), context->m_aliasList.end(), compare);
+    context->m_renderer = std::move(renderer);
+    context->m_layout = layout;
+    return JianziLibrary(std::move(context));
 }
 
-Jianzi::Jianzi(const char* name) : m_name(name) {
-    if (m_name.empty() || !s_library) return;
-    const auto found = s_library->glyphs.find(m_name);
-    if (found == s_library->glyphs.end()) return;
+JianziLibrary::JianziLibrary(std::unique_ptr<JianziContext> context) : m_context(std::move(context)) {}
+
+JianziLibrary::~JianziLibrary() = default;
+
+JianziLibrary::JianziLibrary(JianziLibrary&& other) noexcept = default;
+
+JianziLibrary& JianziLibrary::operator=(JianziLibrary&& other) noexcept = default;
+
+Jianzi::Jianzi(const JianziContext& context) : m_context(context) {}
+
+Jianzi::Jianzi(const JianziContext& context, const char* name) : m_context(context), m_name(name) {
+    if (m_name.empty()) return;
+    const auto found = m_context.m_library.glyphs.find(m_name);
+    if (found == m_context.m_library.glyphs.end()) return;
     const auto& glyph = found->second;
     m_border_flags = glyph.border_flags;
     m_v_segments = glyph.vertical_segments;
@@ -186,12 +199,33 @@ Jianzi::Jianzi(const char* name) : m_name(name) {
     m_node->strokes = glyph.strokes;
 }
 
-Jianzi::Jianzi(const Jianzi& other) { *this = other; }
+Jianzi::Jianzi(const Jianzi& other) : m_context(other.m_context) { CopyData(other); }
+
+Jianzi::Jianzi(Jianzi&& other) noexcept : m_context(other.m_context) { MoveData(std::move(other)); }
 
 Jianzi& Jianzi::operator=(const Jianzi& other) {
     if (this == &other) {
         return *this;
     }
+    CheckContext(other);
+    CopyData(other);
+    return *this;
+}
+
+Jianzi& Jianzi::operator=(Jianzi&& other) {
+    if (this == &other) return *this;
+    CheckContext(other);
+    MoveData(std::move(other));
+    return *this;
+}
+
+void Jianzi::CheckContext(const Jianzi& other) const {
+    if (std::addressof(m_context) != std::addressof(other.m_context)) {
+        throw std::invalid_argument("Cannot combine or assign Jianzi objects from different libraries.");
+    }
+}
+
+void Jianzi::CopyData(const Jianzi& other) {
     m_name = other.m_name;
     m_type = other.m_type;
     // m_strokes = other.m_strokes;
@@ -208,7 +242,15 @@ Jianzi& Jianzi::operator=(const Jianzi& other) {
     } else {
         m_capsule.reset();
     }
-    return *this;
+}
+
+void Jianzi::MoveData(Jianzi&& other) {
+    m_name = std::move(other.m_name);
+    m_type = other.m_type;
+    m_node = std::move(other.m_node);
+    m_border_flags = other.m_border_flags;
+    m_v_segments = other.m_v_segments;
+    m_capsule = std::move(other.m_capsule);
 }
 
 struct JianziOperator {
@@ -232,8 +274,8 @@ const std::map<char32_t, JianziOperator> c_jianzi_operators = {
     {U'*', {[](const Jianzi& j1, const Jianzi& j2) { return j1 * j2; }, 4}},
 };
 
-Jianzi Jianzi::Parse(const char* u8_str) {
-    Jianzi result;
+Jianzi JianziLibrary::Parse(const char* u8_str) const {
+    Jianzi result(*m_context);
 
     using tiny_utf8::string;
     string str(u8_str);
@@ -282,12 +324,11 @@ Jianzi Jianzi::Parse(const char* u8_str) {
                 string sub = str.substr(0, sub_pos - str.begin());
 
                 const std::string name = sub.cpp_str();
-                if (s_library && s_library->glyphs.find(name) != s_library->glyphs.end()) {
-                    values.push(Jianzi(name.c_str()));
+                if (m_context->m_library.glyphs.find(name) != m_context->m_library.glyphs.end()) {
+                    values.push(Jianzi(*m_context, name.c_str()));
                 } else {
-                    if (!s_library) return Jianzi();
-                    const auto alias = s_library->aliases.find(name);
-                    if (alias == s_library->aliases.end()) return Jianzi();
+                    const auto alias = m_context->m_library.aliases.find(name);
+                    if (alias == m_context->m_library.aliases.end()) return Jianzi(*m_context);
                     if (++alias_expansions > 1024) {
                         throw std::runtime_error("Alias expansion did not terminate; the library probably contains a cycle.");
                     }
@@ -314,13 +355,13 @@ Jianzi Jianzi::Parse(const char* u8_str) {
                     } else {
                         // 进行运算
                         if (!Calc(op)) {
-                            return Jianzi();
+                            return Jianzi(*m_context);
                         }
                     }
                 }
                 if (op != U'(') {
                     // 最终没有停在左括号上，算式有误，返回空
-                    return Jianzi();
+                    return Jianzi(*m_context);
                 }
             } else if (c == U'\'') {
                 // 引用，寻找配对引用并置换
@@ -328,11 +369,11 @@ Jianzi Jianzi::Parse(const char* u8_str) {
                 size_t next_quote = str.find(U'\'', curr_quote + 1);
                 if (next_quote == str.npos) {
                     // 没有配对，算式有误，返回空
-                    return Jianzi();
+                    return Jianzi(*m_context);
                 }
                 // 生成算式
                 string sub = str.substr(curr_quote + 1, next_quote - 1);
-                string rep = Jianzi::ParseNatural(sub.c_str());
+                string rep = ParseNatural(sub.c_str());
                 // 替换内容
                 str = "(" + rep + ")" + str.substr(next_quote + 1);
                 continue;
@@ -350,7 +391,7 @@ Jianzi Jianzi::Parse(const char* u8_str) {
                     operators.pop();
                     // 进行运算
                     if (!Calc(op)) {
-                        return Jianzi();
+                        return Jianzi(*m_context);
                     }
                     // 再将新运算符入栈
                     operators.push(c);
@@ -364,7 +405,7 @@ Jianzi Jianzi::Parse(const char* u8_str) {
     }
     if (str.length() > 0) {
         // 已经没有运算符，剩下的是值
-        values.push(Jianzi(str.c_str()));
+        values.push(Jianzi(*m_context, str.c_str()));
     }
 
     // 将剩下的运算符算完
@@ -373,7 +414,7 @@ Jianzi Jianzi::Parse(const char* u8_str) {
         operators.pop();
         // 进行运算
         if (!Calc(op)) {
-            return Jianzi();
+            return Jianzi(*m_context);
         }
     }
 
@@ -385,7 +426,7 @@ Jianzi Jianzi::Parse(const char* u8_str) {
     return result;
 }
 
-std::string Jianzi::ParseNatural(const char* u8_str) {
+std::string JianziLibrary::ParseNatural(const char* u8_str) const {
     using tiny_utf8::string;
     // 初始化输入
     string input(u8_str);
@@ -407,9 +448,9 @@ std::string Jianzi::ParseNatural(const char* u8_str) {
 
     // 检索标记
     std::vector<bool> input_marks(input_length, false);
-    std::vector<JianziInfo> info_list(input_length);
+    std::vector<Jianzi::JianziInfo> info_list(input_length);
 
-    auto MarkInput = [&input, &input_marks, &info_list](const std::vector<JianziInfo>& input_list) {
+    auto MarkInput = [&input, &input_marks, &info_list](const std::vector<Jianzi::JianziInfo>& input_list) {
         for (auto& info : input_list) {
             string info_name = info.name;
             size_t info_length = info_name.length();
@@ -441,9 +482,9 @@ std::string Jianzi::ParseNatural(const char* u8_str) {
     };
 
     // 先对别名进行标记
-    MarkInput(s_alias_list);
+    MarkInput(m_context->m_aliasList);
     // 再标记减字
-    MarkInput(s_jianzi_list);
+    MarkInput(m_context->m_jianziList);
 
     if (input_length == 1 && !input_marks[0]) {
         return std::string();
@@ -649,7 +690,8 @@ std::string Jianzi::ParseNatural(const char* u8_str) {
 }
 
 Jianzi Jianzi::operator&(const Jianzi& right) const {
-    Jianzi ret;
+    CheckContext(right);
+    Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "&" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
     ret.m_node->first = Node::Clone(*m_node);
@@ -681,7 +723,8 @@ Jianzi Jianzi::operator&(const Jianzi& right) const {
 }
 
 Jianzi Jianzi::operator|(const Jianzi& right) const {
-    Jianzi ret;
+    CheckContext(right);
+    Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "|" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
     ret.m_node->first = Node::Clone(*m_node);
@@ -710,7 +753,8 @@ Jianzi Jianzi::operator|(const Jianzi& right) const {
 }
 
 Jianzi Jianzi::operator<(const Jianzi& right) const {
-    Jianzi ret;
+    CheckContext(right);
+    Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "<" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
     ret.m_node->first = Node::Clone(*m_node);
@@ -744,7 +788,8 @@ Jianzi Jianzi::operator<(const Jianzi& right) const {
 }
 
 Jianzi Jianzi::operator/(const Jianzi& below) const {
-    Jianzi ret;
+    CheckContext(below);
+    Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "/" + below.m_name + ")";
     ret.m_node = std::make_unique<Node>();
     ret.m_node->first = Node::Clone(*m_node);
@@ -766,7 +811,8 @@ Jianzi Jianzi::operator/(const Jianzi& below) const {
     const int total = m_v_segments + below.m_v_segments + extra;
     if (!above_participates && below_participates) {
         const auto stroke_height = std::min(1.0f, 2.0f * MaximumStrokeWidth(above_node));
-        const auto edge_height = std::min(s_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
+        const auto edge_height =
+            std::min(m_context.m_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
         const auto zero_height = stroke_height + edge_height;
         const auto fixed_below = Normalize(below_node, NormalizeDirection::Top);
         const auto available = std::max(0.0f, 1.0f - zero_height - fixed_below.b);
@@ -777,7 +823,8 @@ Jianzi Jianzi::operator/(const Jianzi& below) const {
         above_node.layer_ratios.push_back(ratio);
     } else if (above_participates && !below_participates) {
         const auto stroke_height = std::min(1.0f, 2.0f * MaximumStrokeWidth(below_node));
-        const auto edge_height = std::min(s_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
+        const auto edge_height =
+            std::min(m_context.m_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
         const auto zero_height = stroke_height + edge_height;
         const auto fixed_above = Normalize(above_node, NormalizeDirection::Bottom);
         const auto available = std::max(0.0f, 1.0f - zero_height - fixed_above.t);
@@ -817,6 +864,7 @@ Jianzi Jianzi::operator/(const Jianzi& below) const {
 }
 
 Jianzi Jianzi::operator^(const Jianzi& below) const {
+    CheckContext(below);
     Jianzi above = *this;
     if (above.m_v_segments > 0 && below.m_v_segments > 0 && above.m_v_segments > below.m_v_segments) {
         above.m_v_segments = below.m_v_segments;
@@ -830,8 +878,9 @@ Jianzi Jianzi::operator^(const Jianzi& below) const {
 }
 
 Jianzi Jianzi::operator*(const Jianzi& content) const {
+    CheckContext(content);
     if (!m_capsule) return *this / content;
-    Jianzi ret;
+    Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "*" + content.m_name + ")";
     ret.m_node = std::make_unique<Node>();
     ret.m_node->first = Node::Clone(*m_node);
@@ -866,7 +915,8 @@ Jianzi Jianzi::operator*(const Jianzi& content) const {
                    ? to_start + (value - from_start) / (from_end - from_start) * (to_end - to_start)
                    : value;
     };
-    const auto capsule_weight = s_layout.capsule_weight_area * std::sqrt(ratio) + s_layout.capsule_weight_base;
+    const auto capsule_weight =
+        m_context.m_layout.capsule_weight_area * std::sqrt(ratio) + m_context.m_layout.capsule_weight_base;
     for (auto& stroke : base.strokes) {
         stroke.width *= capsule_weight;
         for (auto& vertex : stroke.vertice) {
@@ -913,14 +963,16 @@ Jianzi Jianzi::operator*(const Jianzi& content) const {
 }
 
 std::vector<PathData> qin::Jianzi::RenderPath() const {
-    if (!s_renderer || !m_node) return {};
+    if (!m_node) return {};
     std::vector<Stroke> strokes;
     CollectStrokes(*m_node, BoundingBox{}, 1.0f, strokes);
-    auto paths = s_renderer->Render(strokes);
+    auto paths = m_context.m_renderer->Render(strokes);
     for (auto& command : paths) {
         for (auto& point : command.pts) {
-            point.x = (point.x - s_layout.normalization_tx) / s_layout.normalization_scale;
-            point.y = (point.y - s_layout.normalization_ty) / s_layout.normalization_scale;
+            point.x = (point.x - m_context.m_layout.normalization_tx) /
+                      m_context.m_layout.normalization_scale;
+            point.y = (point.y - m_context.m_layout.normalization_ty) /
+                      m_context.m_layout.normalization_scale;
         }
     }
     return paths;
@@ -932,7 +984,7 @@ Jianzi::BorderFlags Jianzi::GetBorderFlags() const { return m_border_flags; }
 
 int Jianzi::GetSegments() const { return m_v_segments; }
 
-BoundingBox Jianzi::TightBoundingBox(const Node& node) {
+BoundingBox Jianzi::TightBoundingBox(const Node& node) const {
     std::vector<Stroke> strokes;
     CollectStrokes(node, BoundingBox(), 1.0f, strokes);
 
@@ -970,15 +1022,16 @@ BoundingBox Jianzi::TightBoundingBox(const Node& node) {
     return box;
 }
 
-float Jianzi::LayerWeight(const Node& node) {
+float Jianzi::LayerWeight(const Node& node) const {
     float result = 1.0f;
     for (const auto ratio : node.layer_ratios) {
-        result *= s_layout.weight_area * std::sqrt(std::max(0.0f, ratio)) + s_layout.weight_base;
+        result *= m_context.m_layout.weight_area * std::sqrt(std::max(0.0f, ratio)) +
+                  m_context.m_layout.weight_base;
     }
     return result;
 }
 
-float Jianzi::MaximumStrokeWidth(const Node& node, float inherited_weight) {
+float Jianzi::MaximumStrokeWidth(const Node& node, float inherited_weight) const {
     const auto weight = inherited_weight * LayerWeight(node);
     float result = 0;
     for (const auto& stroke : node.strokes) result = std::max(result, stroke.width * weight);
@@ -1034,13 +1087,13 @@ void Jianzi::PlaceZeroSegmentCenter(Node& node, float target) {
 }
 
 void Jianzi::CollectStrokes(const Node& node, const BoundingBox& parent_box, float inherited_weight,
-                            std::vector<Stroke>& strokes) {
+                            std::vector<Stroke>& strokes) const {
     BoundingBox box = parent_box * node.box;
     const auto weight = inherited_weight * LayerWeight(node);
-    box.x += node.outer_border.l * s_layout.border_width * weight;
-    box.y += node.outer_border.t * s_layout.border_width * weight;
-    box.w -= (node.outer_border.l + node.outer_border.r) * s_layout.border_width * weight;
-    box.h -= (node.outer_border.t + node.outer_border.b) * s_layout.border_width * weight;
+    box.x += node.outer_border.l * m_context.m_layout.border_width * weight;
+    box.y += node.outer_border.t * m_context.m_layout.border_width * weight;
+    box.w -= (node.outer_border.l + node.outer_border.r) * m_context.m_layout.border_width * weight;
+    box.h -= (node.outer_border.t + node.outer_border.b) * m_context.m_layout.border_width * weight;
     for (auto& s : node.strokes) {
         Stroke ns = s;
         ns.width *= weight;
@@ -1053,7 +1106,7 @@ void Jianzi::CollectStrokes(const Node& node, const BoundingBox& parent_box, flo
     if (node.second) CollectStrokes(*node.second, box, weight, strokes);
 }
 
-Jianzi::FixedInsets Jianzi::Normalize(Node& node, NormalizeDirection dir) {
+Jianzi::FixedInsets Jianzi::Normalize(Node& node, NormalizeDirection dir) const {
     auto tight_box = TightBoundingBox(node);
     float xa = tight_box.x;
     float xb = tight_box.x + tight_box.w;
