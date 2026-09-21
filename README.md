@@ -17,15 +17,15 @@
 
 ### 减字库
 
-`Jianzi.hpp`从单一 CBOR 字库包读取已定义的减字、笔画描述和配套字体，并直接生成路径。
+`Jianzi.hpp`从单一 StrokeDesc v2 CBOR 字库包读取已定义的减字和拟合后的笔画描述，并直接生成路径。旧版 VertexDesc 字库不再支持。
 
 JianziNote项目内部统一使用以左上角为(0,0)、右下角为(1,1)的归一化坐标。
 
 ### 减字风格
 
-笔画描述作为字库的一部分加载；`StylerFromDb.hpp`是其内部的 CBOR 读取与路径展开实现。
+笔画描述作为字库的一部分加载；内部的 `StrokeDescRenderer` 根据骨架节点、笔画宽度和拟合模型生成轮廓。
 
-`bin`目录内提供基于“思源宋体”旧字形风格开发的减字库，可直接使用。出于外观风格统一等方面考虑，并未开放该减字库的开发工具，有添加减字的需求可提issue。目前支持的基础减字及预览如下：
+StrokeDesc v2 字库由 JianziNote-Editor 采集、拟合和编辑；C++ 端只负责加载成品字库、组合减字并生成轮廓。目前支持的基础减字及历史预览如下：
 
 #### 数字
 
@@ -179,7 +179,7 @@ std::string library_file = "library.cbor";
 // 减字
 std::string jianzi_str = "大九挑七";
 
-// 加载减字、笔画描述和配套字体
+// 加载 StrokeDesc v2 减字库
 Jianzi::OpenLibrary(library_file.c_str());
 
 // 将一个自然表述字串转化为算式，然后进行解析
@@ -199,6 +199,7 @@ auto result = renderer.Render(path_data);
 
 - [tiny-utf8](https://github.com/DuffsDevice/tiny-utf8)
 - [magic_enum](https://github.com/Neargye/magic_enum)
+- [nlohmann/json](https://github.com/nlohmann/json)
 - [FreeType2](https://freetype.org/)
 
 ### 兼容性

@@ -40,5 +40,11 @@ link_directories(
 add_subdirectory(JianziNote)
 add_subdirectory(Jianzi2LaTeX)
 add_subdirectory(Jianzi2Lilypond)
-add_subdirectory(tools/SqliteToCbor)
 add_subdirectory(Jianzi2Svg)
+
+if(BUILD_TESTING)
+    add_executable(stroke-desc-runtime-test tests/StrokeDescRuntimeTest.cpp)
+    target_link_libraries(stroke-desc-runtime-test PRIVATE JianziNote)
+    target_include_directories(stroke-desc-runtime-test PRIVATE ${PROJECT_SOURCE_DIR}/JianziNote)
+    add_test(NAME stroke_desc_runtime COMMAND stroke-desc-runtime-test)
+endif()

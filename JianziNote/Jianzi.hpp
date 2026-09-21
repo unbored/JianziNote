@@ -9,13 +9,11 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json.hpp>
-
 #include "BoundingBox.hpp"
 #include "JianziDefines.hpp"
 
 namespace qin {
-class StylerFromDb;
+class StrokeDescRenderer;
 // 减字统一以1为单位，上下左右各留半个笔画宽度
 class Jianzi {
  public:
@@ -31,9 +29,6 @@ class Jianzi {
 
   // 加载单一 CBOR 字形包及其同目录字体。
   static void OpenLibrary(const char *file);
-
-  // 字形包中定义的笔画种类，顺序与 CBOR 中 stroke_profiles 保持一致。
-  static const std::vector<StrokeProfile> &GetStrokeProfiles();
 
   // 根据公式生成减字。
   // 如“大九挑七”，可写成“(大&九)/(挑*七)”,
@@ -77,9 +72,24 @@ class Jianzi {
   int GetSegments() const;
 
  protected:
-  static nlohmann::json s_library;
-  static std::unique_ptr<StylerFromDb> s_library_styler;
-  static std::vector<StrokeProfile> s_stroke_profiles;
+  struct LibraryData;
+  static std::unique_ptr<LibraryData> s_library;
+  static std::unique_ptr<StrokeDescRenderer> s_renderer;
+
+  struct Layout {
+    float units_per_em = 1000.0f;
+    float baseline_y = 880.0f;
+    float normalization_scale = 1.0f;
+    float normalization_tx = 0.0f;
+    float normalization_ty = 0.0f;
+    float weight_area = 0.7f;
+    float weight_base = 0.3f;
+    float border_width = 0.1f;
+    float zero_segment_edge_width = 0.1f;
+    float capsule_weight_area = 0.5f;
+    float capsule_weight_base = 0.5f;
+  };
+  static Layout s_layout;
 
   std::string m_name;  // 减字名称
   JianziType m_type = JianziType::Other;
@@ -94,6 +104,7 @@ class Jianzi {
       float l = 0;
       float r = 0;
     } outer_border;  // 外部边界状态
+    std::vector<float> layer_ratios;
 
     std::unique_ptr<Node> first;
     std::unique_ptr<Node> second;
@@ -123,6 +134,13 @@ class Jianzi {
     Right = 1,
   };
 
+  struct FixedInsets {
+    float t = 0;
+    float b = 0;
+    float l = 0;
+    float r = 0;
+  };
+
   // 减字名称与类型
   struct JianziInfo {
     std::string name;
@@ -134,9 +152,17 @@ class Jianzi {
  protected:
   // 递归获取所有笔画
   static void CollectStrokes(const Node &node, const BoundingBox &parent_box,
-                             float stroke_width, std::vector<Stroke> &strokes);
+                             float inherited_weight, std::vector<Stroke> &strokes);
   static BoundingBox TightBoundingBox(const Node &node);
-  static void Normalize(Node &node, NormalizeDirection dir);
+  static float LayerWeight(const Node &node);
+  static float MaximumStrokeWidth(const Node &node, float inherited_weight = 1.0f);
+  static float NodeArea(const Node &node);
+  static float RecordLayerRatio(Node &node, float before_area);
+  static void PlaceBody(Node &node, bool horizontal, float start, float body_size,
+                        float fixed_start = 0, float fixed_end = 0);
+  static float SkeletonVerticalCenter(const Node &node);
+  static void PlaceZeroSegmentCenter(Node &node, float target);
+  static FixedInsets Normalize(Node &node, NormalizeDirection dir);
   static void NormalizeFunc(Node &node, const BoundingBox &box);
 };
 

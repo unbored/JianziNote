@@ -10,64 +10,46 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
-#include <filesystem>
 #include <functional>
-#include <iostream>
+#include <limits>
 #include <magic_enum/magic_enum.hpp>
+#include <optional>
 #include <set>
 #include <stack>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 
 #include "Cbor.hpp"
-#include "StylerFromDb.hpp"
+#include "StrokeDescRenderer.hpp"
 
 namespace qin
 
 {
 
-nlohmann::json Jianzi::s_library;
-std::unique_ptr<StylerFromDb> Jianzi::s_library_styler;
-std::vector<StrokeProfile> Jianzi::s_stroke_profiles;
+struct Jianzi::LibraryData {
+    struct Glyph {
+        JianziType type = JianziType::Other;
+        BorderFlags border_flags;
+        int vertical_segments = 1;
+        std::optional<Capsule> capsule;
+        std::vector<Stroke> strokes;
+    };
+
+    std::unordered_map<std::string, Glyph> glyphs;
+    std::unordered_map<std::string, std::string> aliases;
+};
+
+std::unique_ptr<Jianzi::LibraryData> Jianzi::s_library;
+std::unique_ptr<StrokeDescRenderer> Jianzi::s_renderer;
+Jianzi::Layout Jianzi::s_layout;
 std::vector<Jianzi::JianziInfo> Jianzi::s_alias_list;
 std::vector<Jianzi::JianziInfo> Jianzi::s_jianzi_list;
 
 namespace {
 
-std::vector<StrokeProfile> ReadStrokeProfiles(const nlohmann::json& styler) {
-    const auto profiles = styler.value("stroke_profiles", nlohmann::json::array());
-    if (!profiles.is_array()) {
-        throw std::runtime_error("styler.stroke_profiles must be an array.");
-    }
-
-    std::unordered_set<std::string> profile_types;
-    std::vector<StrokeProfile> result;
-    result.reserve(profiles.size());
-    for (const auto& data : profiles) {
-        StrokeProfile profile;
-        profile.type = data.at("type").get<std::string>();
-        if (profile.type.empty() || !profile_types.insert(profile.type).second) {
-            throw std::runtime_error("Each stroke profile must have a unique non-empty type.");
-        }
-
-        const auto& slots = data.at("slots");
-        if (!slots.is_array()) {
-            throw std::runtime_error("stroke profile slots must be an array.");
-        }
-        profile.slots.reserve(slots.size());
-        for (const auto& slot_data : slots) {
-            const auto& default_pt = slot_data.at("default_pt");
-            if (!default_pt.is_array() || default_pt.size() != 2) {
-                throw std::runtime_error("stroke profile slot default_pt must contain two values.");
-            }
-            StrokeProfileSlot slot;
-            slot.default_pt = {default_pt.at(0).get<float>(), default_pt.at(1).get<float>()};
-            slot.vertex_types = slot_data.at("vertex_types").get<std::vector<std::string>>();
-            profile.slots.push_back(std::move(slot));
-        }
-        result.push_back(std::move(profile));
-    }
-    return result;
+bool Flag(const nlohmann::json& flags, const char* long_name, const char* short_name) {
+    if (flags.contains(long_name)) return flags.at(long_name).get<bool>();
+    return flags.value(short_name, false);
 }
 
 }  // namespace
@@ -78,29 +60,107 @@ void Jianzi::OpenLibrary(const char* file) {
         throw std::runtime_error(result.error->message);
     }
     const auto& library = result.document;
-    if (!library.contains("glyphs") || !library.contains("aliases") || !library.contains("styler") ||
-        !library.contains("font")) {
-        throw std::runtime_error("Invalid Jianzi CBOR library.");
+    if (library.value("format", std::string{}) != "jianzinote-stroke-library" ||
+        library.value("format_version", 0) != 2 || !library.contains("glyphs") ||
+        !library.at("glyphs").is_object() || !library.contains("stroke_descs")) {
+        throw std::runtime_error("Jianzi requires a StrokeDesc v2 CBOR library.");
     }
-    const auto stroke_profiles = ReadStrokeProfiles(library.at("styler"));
-    auto styler = std::make_unique<StylerFromDb>();
-    const auto font = std::filesystem::path(file).parent_path() / library.at("font").at("file").get<std::string>();
-    styler->LoadCbor(library.at("styler"), font);
+    auto renderer = std::make_unique<StrokeDescRenderer>(library.at("stroke_descs"));
 
-    s_library = library;
-    s_library_styler = std::move(styler);
-    s_stroke_profiles = stroke_profiles;
+    Layout layout;
+    if (const auto found = library.find("layout"); found != library.end() && found->is_object()) {
+        layout.units_per_em = found->value("units_per_em", layout.units_per_em);
+        layout.baseline_y = found->value("baseline_y", layout.baseline_y);
+        if (const auto normalization = found->find("glyph_normalization");
+            normalization != found->end() && normalization->is_object()) {
+            layout.normalization_scale = normalization->value("scale", layout.normalization_scale);
+            layout.normalization_tx = normalization->value("translate_x", layout.normalization_tx);
+            layout.normalization_ty = normalization->value("translate_y", layout.normalization_ty);
+        }
+        if (const auto composition = found->find("composition");
+            composition != found->end() && composition->is_object()) {
+            layout.weight_area = composition->value("weight_area", layout.weight_area);
+            layout.weight_base = composition->value("weight_base", layout.weight_base);
+            layout.border_width = composition->value("border_width", layout.border_width);
+            layout.zero_segment_edge_width =
+                composition->value("zero_segment_edge_width", layout.zero_segment_edge_width);
+            layout.capsule_weight_area = composition->value("capsule_weight_area", layout.capsule_weight_area);
+            layout.capsule_weight_base = composition->value("capsule_weight_base", layout.capsule_weight_base);
+        }
+    }
+    if (!std::isfinite(layout.normalization_scale) || std::abs(layout.normalization_scale) < 1e-9f) {
+        throw std::runtime_error("layout.glyph_normalization.scale must be finite and non-zero.");
+    }
+    if (!std::isfinite(layout.normalization_tx) || !std::isfinite(layout.normalization_ty) ||
+        !std::isfinite(layout.units_per_em) || layout.units_per_em <= 0 || !std::isfinite(layout.baseline_y)) {
+        throw std::runtime_error("Library layout contains invalid metrics.");
+    }
+    const auto require_nonnegative = [](float value, const char* name) {
+        if (!std::isfinite(value) || value < 0) throw std::runtime_error(std::string(name) + " must be non-negative.");
+    };
+    require_nonnegative(layout.weight_area, "layout.composition.weight_area");
+    require_nonnegative(layout.weight_base, "layout.composition.weight_base");
+    require_nonnegative(layout.zero_segment_edge_width, "layout.composition.zero_segment_edge_width");
+    require_nonnegative(layout.capsule_weight_area, "layout.composition.capsule_weight_area");
+    require_nonnegative(layout.capsule_weight_base, "layout.composition.capsule_weight_base");
+    if (!std::isfinite(layout.border_width)) {
+        throw std::runtime_error("layout.composition.border_width must be finite.");
+    }
+
+    auto data = std::make_unique<LibraryData>();
+    for (auto source = library.at("glyphs").begin(); source != library.at("glyphs").end(); ++source) {
+        LibraryData::Glyph glyph;
+        glyph.type = magic_enum::enum_cast<JianziType>(source.value().at("type").get<std::string>())
+                         .value_or(JianziType::Other);
+        const auto& flags = source.value().at("border_flags");
+        glyph.border_flags = {Flag(flags, "top", "t"), Flag(flags, "bottom", "b"),
+                              Flag(flags, "left", "l"), Flag(flags, "right", "r")};
+        glyph.vertical_segments = source.value().at("vertical_segments").get<int>();
+        if (const auto capsule = source.value().find("capsule"); capsule != source.value().end()) {
+            Capsule compiled;
+            const auto& capsule_flags = capsule->at("border_flags");
+            compiled.border_flags = {Flag(capsule_flags, "top", "t"), Flag(capsule_flags, "bottom", "b"),
+                                     Flag(capsule_flags, "left", "l"), Flag(capsule_flags, "right", "r")};
+            compiled.v_segments = capsule->at("vertical_segments").get<int>();
+            compiled.tl = {capsule->at("top_left").at(0).get<float>(),
+                           capsule->at("top_left").at(1).get<float>()};
+            compiled.br = {capsule->at("bottom_right").at(0).get<float>(),
+                           capsule->at("bottom_right").at(1).get<float>()};
+            glyph.capsule = compiled;
+        }
+        for (const auto& stroke_source : source.value().at("strokes")) {
+            Stroke stroke;
+            stroke.desc = stroke_source.at("desc").get<std::string>();
+            if (!renderer->Contains(stroke.desc)) {
+                throw std::runtime_error("Glyph " + source.key() + " references unknown StrokeDesc " + stroke.desc + ".");
+            }
+            stroke.width = stroke_source.at("width").get<float>();
+            for (const auto& vertex : stroke_source.at("nodes")) {
+                stroke.vertice.push_back(
+                    {{vertex.at("x").get<float>(), vertex.at("y").get<float>()},
+                     magic_enum::enum_cast<VertexRegion>(vertex.value("region", std::string{"Top"}))
+                         .value_or(VertexRegion::Top)});
+            }
+            glyph.strokes.push_back(std::move(stroke));
+        }
+        if (!data->glyphs.emplace(source.key(), std::move(glyph)).second) {
+            throw std::runtime_error("Duplicate glyph name: " + source.key());
+        }
+    }
+
     s_jianzi_list.clear();
     s_alias_list.clear();
-    for (auto it = s_library["glyphs"].begin(); it != s_library["glyphs"].end(); ++it) {
-        s_jianzi_list.push_back(
-            {it.key(),
-             magic_enum::enum_cast<JianziType>(it.value().at("type").get<std::string>()).value_or(JianziType::Other)});
+    for (const auto& [name, glyph] : data->glyphs) {
+        s_jianzi_list.push_back({name, glyph.type});
     }
-    for (const auto& alias : s_library["aliases"]) {
-        s_alias_list.push_back(
-            {alias.at("alias").get<std::string>(),
-             magic_enum::enum_cast<JianziType>(alias.at("type").get<std::string>()).value_or(JianziType::Other)});
+    for (const auto& alias : library.value("aliases", nlohmann::json::array())) {
+        const auto name = alias.at("alias").get<std::string>();
+        const auto target = alias.at("glyph").get<std::string>();
+        if (name.empty() || target.empty() || !data->aliases.emplace(name, target).second) {
+            throw std::runtime_error("Alias names and targets must be non-empty and names must be unique.");
+        }
+        s_alias_list.push_back({name, magic_enum::enum_cast<JianziType>(alias.value("type", std::string{"Other"}))
+                                         .value_or(JianziType::Other)});
     }
     const auto compare = [](const JianziInfo& a, const JianziInfo& b) {
         tiny_utf8::string an = a.name, bn = b.name;
@@ -108,46 +168,22 @@ void Jianzi::OpenLibrary(const char* file) {
     };
     std::sort(s_jianzi_list.begin(), s_jianzi_list.end(), compare);
     std::sort(s_alias_list.begin(), s_alias_list.end(), compare);
+    s_library = std::move(data);
+    s_renderer = std::move(renderer);
+    s_layout = layout;
 }
 
-const std::vector<StrokeProfile>& Jianzi::GetStrokeProfiles() { return s_stroke_profiles; }
-
 Jianzi::Jianzi(const char* name) : m_name(name) {
-    if (m_name.empty() || !s_library.contains("glyphs") || !s_library["glyphs"].contains(m_name)) return;
-    try {
-        const auto& glyph = s_library["glyphs"].at(m_name);
-        const auto& flags = glyph.at("border_flags");
-        m_border_flags = {flags.at("top").get<bool>(), flags.at("bottom").get<bool>(), flags.at("left").get<bool>(),
-                          flags.at("right").get<bool>()};
-        m_v_segments = glyph.at("vertical_segments").get<int>();
-        m_type = magic_enum::enum_cast<JianziType>(glyph.at("type").get<std::string>()).value_or(JianziType::Other);
-        if (glyph.contains("capsule")) {
-            const auto& data = glyph.at("capsule");
-            const auto& cf = data.at("border_flags");
-            m_capsule = std::make_unique<Capsule>();
-            m_capsule->border_flags = {cf.at("top").get<bool>(), cf.at("bottom").get<bool>(), cf.at("left").get<bool>(),
-                                       cf.at("right").get<bool>()};
-            m_capsule->v_segments = data.at("vertical_segments").get<int>();
-            m_capsule->tl = {data.at("top_left")[0].get<float>(), data.at("top_left")[1].get<float>()};
-            m_capsule->br = {data.at("bottom_right")[0].get<float>(), data.at("bottom_right")[1].get<float>()};
-        }
-        m_node = std::make_unique<Node>();
-        for (const auto& data : glyph.at("strokes")) {
-            Stroke stroke;
-            stroke.profile = data.value("profile", std::string{});
-            stroke.weight = data.at("weight").get<float>();
-            for (const auto& vertex : data.at("vertices"))
-                stroke.vertice.push_back(
-                    {vertex.at("type").get<std::string>(),
-                     {vertex.at("x").get<float>(), vertex.at("y").get<float>()},
-                     magic_enum::enum_cast<VertexRegion>(vertex.at("region").get<std::string>())
-                         .value_or(VertexRegion::Top)});
-            m_node->strokes.push_back(std::move(stroke));
-        }
-    } catch (const std::exception& error) {
-        std::cout << "Error loading jianzi: " << error.what() << std::endl;
-        *this = Jianzi();
-    }
+    if (m_name.empty() || !s_library) return;
+    const auto found = s_library->glyphs.find(m_name);
+    if (found == s_library->glyphs.end()) return;
+    const auto& glyph = found->second;
+    m_border_flags = glyph.border_flags;
+    m_v_segments = glyph.vertical_segments;
+    m_type = glyph.type;
+    if (glyph.capsule) m_capsule = std::make_unique<Capsule>(*glyph.capsule);
+    m_node = std::make_unique<Node>();
+    m_node->strokes = glyph.strokes;
 }
 
 Jianzi::Jianzi(const Jianzi& other) { *this = other; }
@@ -209,17 +245,12 @@ Jianzi Jianzi::Parse(const char* u8_str) {
         ws_pos = str.find(U' ');
     }
 
-    // 特殊处理：!标记紧跟单个字符，给出名字后直接返回
-    if (!str.empty() && str[0] == U'!') {
-        result.m_name = str.cpp_str();
-        return result;
-    }
-
     // 前后添加括号，有利于后续处理
     str = "(" + str + ")";
 
     std::stack<Jianzi> values;
     std::stack<char32_t> operators;
+    size_t alias_expansions = 0;
 
     // 定义使用运算符op进行运算的函数
     auto Calc = [&values](char32_t op) {
@@ -251,18 +282,16 @@ Jianzi Jianzi::Parse(const char* u8_str) {
                 string sub = str.substr(0, sub_pos - str.begin());
 
                 const std::string name = sub.cpp_str();
-                if (s_library.contains("glyphs") && s_library["glyphs"].contains(name)) {
+                if (s_library && s_library->glyphs.find(name) != s_library->glyphs.end()) {
                     values.push(Jianzi(name.c_str()));
                 } else {
-                    std::string glyph;
-                    for (const auto& alias : s_library.value("aliases", nlohmann::json::array())) {
-                        if (alias.at("alias").get<std::string>() == name) {
-                            glyph = alias.at("glyph").get<std::string>();
-                            break;
-                        }
+                    if (!s_library) return Jianzi();
+                    const auto alias = s_library->aliases.find(name);
+                    if (alias == s_library->aliases.end()) return Jianzi();
+                    if (++alias_expansions > 1024) {
+                        throw std::runtime_error("Alias expansion did not terminate; the library probably contains a cycle.");
                     }
-                    if (glyph.empty()) return Jianzi();
-                    str = "(" + string(glyph) + ")" + str.substr(sub_pos - str.begin());
+                    str = "(" + string(alias->second) + ")" + str.substr(sub_pos - str.begin());
                     continue;
                 }
             }
@@ -417,8 +446,7 @@ std::string Jianzi::ParseNatural(const char* u8_str) {
     MarkInput(s_jianzi_list);
 
     if (input_length == 1 && !input_marks[0]) {
-        // 如果输入为单个字且不在减字列表当中，标记!符号并在后续处理
-        return "!" + std::string(u8_str);
+        return std::string();
     } else {
         // 检查是否所有位置均已处理
         for (auto m : input_marks) {
@@ -620,428 +648,282 @@ std::string Jianzi::ParseNatural(const char* u8_str) {
     return ret.cpp_str();
 }
 
-float CalculateZoom(size_t stroke_num) {
-    // return 1 - 0.013f * ((int)stroke_num - 1);
-    return 0.4f * std::pow(1.1f, (1 - (float)stroke_num)) + 0.6f;
-}
-
 Jianzi Jianzi::operator&(const Jianzi& right) const {
     Jianzi ret;
-    // 名称：公式
     ret.m_name = "(" + m_name + "&" + right.m_name + ")";
-
-    float border_flag = 0.25f;  // 默认退0.25个
-    if (m_border_flags.r != right.m_border_flags.l) {
-        // 一方有边界，各退半个笔画宽
-        border_flag = 0.5f;
-    } else if (m_border_flags.r && right.m_border_flags.l) {
-        // 两方有边界，各退一个笔画宽
-        border_flag = 1.0f;
-    }
-
     ret.m_node = std::make_unique<Node>();
-    // 当前减字
-    {
-        ret.m_node->first = Node::Clone(*m_node);
-        Node& node = *ret.m_node->first;
-        // 将右侧归一化
-        Normalize(node, NormalizeDirection::Right);
-        // 先处理边界
-        node.outer_border.r = border_flag;
-        // 每个box均压缩至一半
-        node.box.w = 0.5f;
-    }
-    // 右侧减字
-    {
-        ret.m_node->second = Node::Clone(*right.m_node);
-        Node& node = *ret.m_node->second;
-        // 将左侧归一化
-        Normalize(node, NormalizeDirection::Left);
-        // 先处理边界
-        node.outer_border.l = border_flag;
-        // 压缩至一半后加到右侧
-        node.box.x = 0.5f;
-        node.box.w = 0.5f;
-    }
-
-    // 处理整个减字边界
+    ret.m_node->first = Node::Clone(*m_node);
+    ret.m_node->second = Node::Clone(*right.m_node);
+    auto& left_node = *ret.m_node->first;
+    auto& right_node = *ret.m_node->second;
+    const auto before_left = NodeArea(left_node);
+    const auto before_right = NodeArea(right_node);
+    const auto fixed_left = Normalize(left_node, NormalizeDirection::Right);
+    const auto fixed_right = Normalize(right_node, NormalizeDirection::Left);
+    const float gap = m_border_flags.r != right.m_border_flags.l
+                          ? 0.5f
+                          : (m_border_flags.r && right.m_border_flags.l ? 1.0f : 0.25f);
+    left_node.outer_border.r = gap;
+    right_node.outer_border.l = gap;
+    const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
+    const auto left_body = available * 0.5f;
+    PlaceBody(left_node, true, 0, left_body, fixed_left.l, 0);
+    PlaceBody(right_node, true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
+    RecordLayerRatio(left_node, before_left);
+    RecordLayerRatio(right_node, before_right);
     ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
     ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
     ret.m_border_flags.l = m_border_flags.l;
     ret.m_border_flags.r = right.m_border_flags.r;
 
-    // 分段数取大者
-    ret.m_v_segments = m_v_segments > right.m_v_segments ? m_v_segments : right.m_v_segments;
-
+    ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
     return ret;
 }
 
 Jianzi Jianzi::operator|(const Jianzi& right) const {
     Jianzi ret;
-    // 名称：公式
     ret.m_name = "(" + m_name + "|" + right.m_name + ")";
-
     ret.m_node = std::make_unique<Node>();
-
-    float border_flag = 0.0f;
-    if (m_border_flags.r) {
-        // 有边界，退2个笔画宽
-        border_flag = 2.0f;
-    } else {
-        // 无边界，也得退一个笔画
-        border_flag = 1.0f;
-    }
-    // 当前减字
-    {
-        ret.m_node->first = Node::Clone(*m_node);
-        Node& node = *ret.m_node->first;
-        // 将右侧归一化
-        Normalize(node, NormalizeDirection::Right);
-        // 先处理边界
-        node.outer_border.r = border_flag;
-        // 每个box均压缩至一半
-        node.box.w = 0.5f;
-    }
-
-    if (right.m_border_flags.l) {
-        // 有边界，退2个笔画宽
-        border_flag = 2.0f;
-    } else {
-        // 无边界，也得退一个笔画
-        border_flag = 1.0f;
-    }
-    // 右侧减字
-    {
-        ret.m_node->second = Node::Clone(*right.m_node);
-        Node& node = *ret.m_node->second;
-        // 将左侧归一化
-        Normalize(node, NormalizeDirection::Left);
-        // 先处理边界
-        node.outer_border.l = border_flag;
-        // 压缩至一半后加到右侧
-        node.box.x = 0.5f;
-        node.box.w = 0.5f;
-    }
-
-    // 处理整个减字边界
+    ret.m_node->first = Node::Clone(*m_node);
+    ret.m_node->second = Node::Clone(*right.m_node);
+    auto& left_node = *ret.m_node->first;
+    auto& right_node = *ret.m_node->second;
+    const auto before_left = NodeArea(left_node);
+    const auto before_right = NodeArea(right_node);
+    const auto fixed_left = Normalize(left_node, NormalizeDirection::Right);
+    const auto fixed_right = Normalize(right_node, NormalizeDirection::Left);
+    left_node.outer_border.r = m_border_flags.r ? 2.0f : 1.0f;
+    right_node.outer_border.l = right.m_border_flags.l ? 2.0f : 1.0f;
+    const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
+    const auto left_body = available * 0.5f;
+    PlaceBody(left_node, true, 0, left_body, fixed_left.l, 0);
+    PlaceBody(right_node, true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
+    RecordLayerRatio(left_node, before_left);
+    RecordLayerRatio(right_node, before_right);
     ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
     ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
     ret.m_border_flags.l = m_border_flags.l;
     ret.m_border_flags.r = right.m_border_flags.r;
 
-    // 分段数取大者
-    ret.m_v_segments = m_v_segments > right.m_v_segments ? m_v_segments : right.m_v_segments;
-
+    ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
     return ret;
 }
 
 Jianzi Jianzi::operator<(const Jianzi& right) const {
-    // 基本与&相同，除了比例
     Jianzi ret;
-    // 名称：公式
     ret.m_name = "(" + m_name + "<" + right.m_name + ")";
-
-    float border_flag = 0.25f;  // 默认退0.25个
-    if (m_border_flags.r != right.m_border_flags.l) {
-        // 一方有边界，各退半个笔画宽
-        border_flag = 0.5f;
-    } else if (m_border_flags.r && right.m_border_flags.l) {
-        // 两方有边界，各退一个笔画宽
-        border_flag = 1.0f;
-    }
-
     ret.m_node = std::make_unique<Node>();
-    // 当前减字
-    {
-        ret.m_node->first = Node::Clone(*m_node);
-        Node& node = *ret.m_node->first;
-        // 考虑到此类减字较为特殊，将左右侧都归一化
-        Normalize(node, NormalizeDirection::Left);
-        Normalize(node, NormalizeDirection::Right);
-        // 先处理边界
-        node.outer_border.r = border_flag;
-        // 每个box均压缩至一半
-        node.box.w = 0.3f;
-    }
-    // 右侧减字
-    {
-        ret.m_node->second = Node::Clone(*right.m_node);
-        Node& node = *ret.m_node->second;
-        // 将左侧归一化
-        Normalize(node, NormalizeDirection::Left);
-        // 先处理边界
-        node.outer_border.l = border_flag;
-        // 压缩至一半后加到右侧
-        node.box.x = 0.3f;
-        node.box.w = 0.7f;
-    }
-
-    // 处理整个减字边界
+    ret.m_node->first = Node::Clone(*m_node);
+    ret.m_node->second = Node::Clone(*right.m_node);
+    auto& left_node = *ret.m_node->first;
+    auto& right_node = *ret.m_node->second;
+    const auto before_left = NodeArea(left_node);
+    const auto before_right = NodeArea(right_node);
+    const auto both = static_cast<NormalizeDirection>(static_cast<int>(NormalizeDirection::Left) |
+                                                       static_cast<int>(NormalizeDirection::Right));
+    const auto fixed_left = Normalize(left_node, both);
+    const auto fixed_right = Normalize(right_node, NormalizeDirection::Left);
+    const float gap = m_border_flags.r != right.m_border_flags.l
+                          ? 0.5f
+                          : (m_border_flags.r && right.m_border_flags.l ? 1.0f : 0.25f);
+    left_node.outer_border.r = gap;
+    right_node.outer_border.l = gap;
+    const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
+    const auto left_body = available * 0.3f;
+    PlaceBody(left_node, true, 0, left_body, fixed_left.l, 0);
+    PlaceBody(right_node, true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
+    RecordLayerRatio(left_node, before_left);
+    RecordLayerRatio(right_node, before_right);
     ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
     ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
     ret.m_border_flags.l = m_border_flags.l;
     ret.m_border_flags.r = right.m_border_flags.r;
 
-    // 分段数取大者
-    ret.m_v_segments = m_v_segments > right.m_v_segments ? m_v_segments : right.m_v_segments;
-
+    ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
     return ret;
 }
 
 Jianzi Jianzi::operator/(const Jianzi& below) const {
     Jianzi ret;
-    // 名称：公式
     ret.m_name = "(" + m_name + "/" + below.m_name + ")";
-
-    // 根据分段数确定是否需要加一个segment
-    int add_segment = 0;
-    float border_flag = 0.25f;  // 默认退0.25个
-    if (m_border_flags.b != below.m_border_flags.t) {
-        // 一方有边界，各退半个笔画宽
-        border_flag = 0.5f;
-    } else if (m_border_flags.b && below.m_border_flags.t) {
-        // 两方有边界，插入一个新的分段
-        add_segment = 1;
-        // 插入新分段后不必再退
-        border_flag = 0;
-    }
-    int total_segment = m_v_segments + below.m_v_segments + add_segment;
-
     ret.m_node = std::make_unique<Node>();
-    // 当前减字
-    {
-        ret.m_node->first = Node::Clone(*m_node);
-        Node& node = *ret.m_node->first;
-        // 将下侧归一化
-        Normalize(node, NormalizeDirection::Bottom);
-        // 先处理边界
-        node.outer_border.b = border_flag;
-        // 每个box均压缩
-        node.box.h = (float)m_v_segments / (float)total_segment;
+    ret.m_node->first = Node::Clone(*m_node);
+    ret.m_node->second = Node::Clone(*below.m_node);
+    auto& above_node = *ret.m_node->first;
+    auto& below_node = *ret.m_node->second;
+    const auto before_above = NodeArea(above_node);
+    const auto before_below = NodeArea(below_node);
+    const bool above_participates = m_v_segments > 0;
+    const bool below_participates = below.m_v_segments > 0;
+    int extra = 0;
+    float gap = 0.25f;
+    if (m_border_flags.b != below.m_border_flags.t) {
+        gap = 0.5f;
+    } else if (m_border_flags.b && below.m_border_flags.t) {
+        extra = 1;
+        gap = 0;
     }
-    // 下方减字
-    {
-        ret.m_node->second = Node::Clone(*below.m_node);
-        Node& node = *ret.m_node->second;
-        // 将上侧归一化
-        Normalize(node, NormalizeDirection::Top);
-        // 先处理边界
-        node.outer_border.t = border_flag;
-        // 压缩
-        node.box.y = (float)(m_v_segments + add_segment) / (float)total_segment;
-        node.box.h = (float)(below.m_v_segments) / (float)total_segment;
+    const int total = m_v_segments + below.m_v_segments + extra;
+    if (!above_participates && below_participates) {
+        const auto stroke_height = std::min(1.0f, 2.0f * MaximumStrokeWidth(above_node));
+        const auto edge_height = std::min(s_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
+        const auto zero_height = stroke_height + edge_height;
+        const auto fixed_below = Normalize(below_node, NormalizeDirection::Top);
+        const auto available = std::max(0.0f, 1.0f - zero_height - fixed_below.b);
+        const auto unit = available / static_cast<float>(below.m_v_segments + extra);
+        PlaceBody(below_node, false, zero_height + unit * extra, unit * below.m_v_segments, 0, fixed_below.b);
+        PlaceZeroSegmentCenter(above_node, edge_height + stroke_height * 0.5f);
+        const auto ratio = RecordLayerRatio(below_node, before_below);
+        above_node.layer_ratios.push_back(ratio);
+    } else if (above_participates && !below_participates) {
+        const auto stroke_height = std::min(1.0f, 2.0f * MaximumStrokeWidth(below_node));
+        const auto edge_height = std::min(s_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
+        const auto zero_height = stroke_height + edge_height;
+        const auto fixed_above = Normalize(above_node, NormalizeDirection::Bottom);
+        const auto available = std::max(0.0f, 1.0f - zero_height - fixed_above.t);
+        const auto unit = available / static_cast<float>(m_v_segments + extra);
+        PlaceBody(above_node, false, 0, unit * m_v_segments, fixed_above.t, 0);
+        PlaceZeroSegmentCenter(below_node, 1.0f - edge_height - stroke_height * 0.5f);
+        const auto ratio = RecordLayerRatio(above_node, before_above);
+        below_node.layer_ratios.push_back(ratio);
+    } else if (above_participates && below_participates) {
+        const auto fixed_above = Normalize(above_node, NormalizeDirection::Bottom);
+        const auto fixed_below = Normalize(below_node, NormalizeDirection::Top);
+        const auto available = std::max(0.0f, 1.0f - fixed_above.t - fixed_below.b);
+        const auto unit = available / static_cast<float>(total);
+        PlaceBody(above_node, false, 0, unit * m_v_segments, fixed_above.t, 0);
+        PlaceBody(below_node, false, fixed_above.t + unit * (m_v_segments + extra),
+                  unit * below.m_v_segments, 0, fixed_below.b);
+        RecordLayerRatio(above_node, before_above);
+        RecordLayerRatio(below_node, before_below);
+    } else if (total > 0) {
+        PlaceZeroSegmentCenter(above_node, 0);
+        PlaceZeroSegmentCenter(below_node, 1);
+        RecordLayerRatio(above_node, before_above);
+        RecordLayerRatio(below_node, before_below);
+    } else {
+        RecordLayerRatio(above_node, before_above);
+        RecordLayerRatio(below_node, before_below);
     }
-
-    // 处理整个减字边界
+    above_node.outer_border.b = gap;
+    below_node.outer_border.t = gap;
     ret.m_border_flags.t = m_border_flags.t;
     ret.m_border_flags.b = below.m_border_flags.b;
     ret.m_border_flags.l = m_border_flags.l || below.m_border_flags.l;
     ret.m_border_flags.r = m_border_flags.r || below.m_border_flags.r;
 
-    // 分段数取和
-    ret.m_v_segments = total_segment;
-
+    ret.m_v_segments = total;
     return ret;
 }
 
 Jianzi Jianzi::operator^(const Jianzi& below) const {
-    // 令上方减字不大于下方
     Jianzi above = *this;
-    if (above.m_v_segments > below.m_v_segments) {
+    if (above.m_v_segments > 0 && below.m_v_segments > 0 && above.m_v_segments > below.m_v_segments) {
         above.m_v_segments = below.m_v_segments;
-    }
-    // 上方减字也不能太小
-    else if (above.m_v_segments < below.m_v_segments * 0.3f) {
+    } else if (above.m_v_segments > 0 && below.m_v_segments > 0 &&
+               above.m_v_segments < below.m_v_segments * 0.3f) {
         above.m_v_segments = std::round(below.m_v_segments * 0.3f);
     }
     Jianzi ret = above / below;
-    // 名称：公式
     ret.m_name = "(" + m_name + "^" + below.m_name + ")";
-
     return ret;
 }
 
 Jianzi Jianzi::operator*(const Jianzi& content) const {
-    // 没有capsule的情况下返回"/"的结果
-    if (!m_capsule) {
-        return *this / content;
-    }
-
+    if (!m_capsule) return *this / content;
     Jianzi ret;
-    // 名称：公式
     ret.m_name = "(" + m_name + "*" + content.m_name + ")";
-
-    // 计算内容放进减字后实际占用的segment
-    int content_segments = content.m_v_segments;
-    if (m_capsule->border_flags.t && content.m_border_flags.t) {
-        content_segments++;
-    }
-    if (m_capsule->border_flags.b && content.m_border_flags.b) {
-        content_segments++;
-    }
-    // 根据填充减字的segment不同，本体可能需要缩放也可能不需要
-    if (m_capsule->v_segments > content_segments) {
-        content_segments = m_capsule->v_segments;
-    }
-    int final_segments = m_v_segments + content_segments - m_capsule->v_segments;
-
-    // 计算包围框缩放后的位置
-    // 包围框上方点跟随外减字上方走
-    Point2f tl = m_capsule->tl;
-    tl.y *= (float)m_v_segments / (float)final_segments;
-    // 下方点则跟随下方走
-    Point2f br = m_capsule->br;
-    br.y = 1.0f - br.y;
-    br.y *= (float)m_v_segments / (float)final_segments;
-    br.y = 1.0f - br.y;
-
     ret.m_node = std::make_unique<Node>();
-    // 当前减字
-    {
-        // 后续的笔画粗细调整并不适用于*运算的本字。在此预先计算
-        // 调整面积与segment的调整有关。但不应缩放得太厉害
-        float area = (float)m_v_segments / (float)final_segments;
-        float weight = 0.5f * std::sqrt(area) + 0.5f;
+    ret.m_node->first = Node::Clone(*m_node);
+    ret.m_node->second = Node::Clone(*content.m_node);
+    auto& base = *ret.m_node->first;
+    auto& inside = *ret.m_node->second;
+    const auto before_base = NodeArea(base);
+    const auto before_inside = NodeArea(inside);
+    const bool zero_content = content.m_v_segments == 0;
+    const bool top_conflict = m_capsule->border_flags.t && content.m_border_flags.t;
+    const bool bottom_conflict = m_capsule->border_flags.b && content.m_border_flags.b;
+    int content_segments = content.m_v_segments;
+    if (!zero_content) content_segments += static_cast<int>(top_conflict) + static_cast<int>(bottom_conflict);
+    content_segments = std::max(content_segments, m_capsule->v_segments);
+    const int final_segments = m_v_segments + content_segments - m_capsule->v_segments;
+    const float ratio = m_v_segments > 0 && final_segments > 0
+                            ? static_cast<float>(m_v_segments) / static_cast<float>(final_segments)
+                            : 1.0f;
 
-        ret.m_node->first = Node::Clone(*m_node);
-        Node& node = *ret.m_node->first;
-        for (auto& s : node.strokes) {
-            s.weight *= weight;
-            for (auto& v : s.vertice) {
-                switch (v.region) {
-                    case VertexRegion::Top:
-                        v.pt.y *= (float)m_v_segments / (float)final_segments;
-                        break;
-                    case VertexRegion::Bottom:
-                        // 上下颠倒后再计算
-                        v.pt.y = 1.0f - v.pt.y;
-                        v.pt.y *= (float)m_v_segments / (float)final_segments;
-                        // 记得倒回来
-                        v.pt.y = 1.0f - v.pt.y;
-                        break;
-                    case VertexRegion::Medium:
-                        // 计算中间点坐标
-                        // 中间点坐标实际上跟着包围框变化
-                        v.pt.y =
-                            (v.pt.y - m_capsule->tl.y) / (m_capsule->br.y - m_capsule->tl.y) * (br.y - tl.y) + tl.y;
-                        break;
-                    default:
-                        break;
-                }
+    const auto old_tl = m_capsule->tl;
+    const auto old_br = m_capsule->br;
+    auto host_box = TightBoundingBox(base);
+    const float outer_top = std::min(old_tl.y, host_box.y);
+    const float outer_bottom = std::max(old_br.y, host_box.y + host_box.h);
+    const float envelope = outer_bottom - outer_top;
+    const auto to_unit = [&](float value) { return envelope > 1e-9f ? (value - outer_top) / envelope : 0.0f; };
+    const auto from_unit = [&](float value) { return outer_top + value * envelope; };
+    Point2f tl{old_tl.x, from_unit(to_unit(old_tl.y) * ratio)};
+    Point2f br{old_br.x, from_unit(1.0f - (1.0f - to_unit(old_br.y)) * ratio)};
+    const auto map_interval = [](float value, float from_start, float from_end, float to_start, float to_end) {
+        return std::abs(from_end - from_start) > 1e-9f
+                   ? to_start + (value - from_start) / (from_end - from_start) * (to_end - to_start)
+                   : value;
+    };
+    const auto capsule_weight = s_layout.capsule_weight_area * std::sqrt(ratio) + s_layout.capsule_weight_base;
+    for (auto& stroke : base.strokes) {
+        stroke.width *= capsule_weight;
+        for (auto& vertex : stroke.vertice) {
+            if (vertex.region == VertexRegion::Top) {
+                vertex.pt.y = from_unit(to_unit(vertex.pt.y) * ratio);
+            } else if (vertex.region == VertexRegion::Bottom) {
+                vertex.pt.y = from_unit(1.0f - (1.0f - to_unit(vertex.pt.y)) * ratio);
+            } else if (vertex.region == VertexRegion::Medium) {
+                vertex.pt.y = map_interval(vertex.pt.y, old_tl.y, old_br.y, tl.y, br.y);
             }
         }
     }
 
-    // 处理包围框内的笔画
-    // 根据segment的情况调整包围框大小
-    if (m_capsule->border_flags.t && content.m_border_flags.t) {
-        tl.y += 1.0f / (float)final_segments;
-    }
-    if (m_capsule->border_flags.b && content.m_border_flags.b) {
-        br.y -= 1.0f / (float)final_segments;
-    }
+    const auto capsule_height = std::max(0.0f, br.y - tl.y);
+    const auto segment_height = content_segments > 0 ? capsule_height / content_segments : 0.0f;
+    if (top_conflict && !zero_content) tl.y += segment_height;
+    if (bottom_conflict && !zero_content) br.y -= segment_height;
+    if (br.y < tl.y) throw std::runtime_error("Capsule has no vertical space after border avoidance.");
 
-    // 把content的box扔到capsule范围内
-    {
-        ret.m_node->second = Node::Clone(*content.m_node);
-        Node& node = *ret.m_node->second;
-        // 根据情况把content四周归一化
-        if (m_capsule->border_flags.t || tl.y > 0) {
-            Normalize(node, NormalizeDirection::Top);
-        }
-        if (m_capsule->border_flags.b || br.y < 1.0f) {
-            Normalize(node, NormalizeDirection::Bottom);
-        }
-        if (m_capsule->border_flags.l || tl.x > 0) {
-            Normalize(node, NormalizeDirection::Left);
-        }
-        if (m_capsule->border_flags.r || br.x < 1.0f) {
-            Normalize(node, NormalizeDirection::Right);
-        }
-
-        // 先关注capsule的边界情况。
-        if (m_capsule->border_flags.l) {
-            if (content.m_border_flags.l) {
-                node.outer_border.l = 2.0f;
-            } else {
-                node.outer_border.l = 1.0f;
-            }
-        }
-        if (m_capsule->border_flags.r) {
-            if (content.m_border_flags.r) {
-                node.outer_border.r = 2.0f;
-            } else {
-                node.outer_border.r = 1.0f;
-            }
-        }
-
-        if (m_capsule->border_flags.t) {
-            if (content.m_border_flags.t) {
-                // 已经处理过间隔
-                node.outer_border.t = 0;
-            } else {
-                node.outer_border.t = 1.0f;
-            }
-        }
-        if (m_capsule->border_flags.b) {
-            if (content.m_border_flags.b) {
-                // 已经处理过间隔
-                node.outer_border.b = 0;
-            } else {
-                node.outer_border.b = 1.0f;
-            }
-        }
-
-        // 再缩放
-        node.box.x = tl.x;
-        node.box.y = tl.y;
-        node.box.w = br.x - tl.x;
-        node.box.h = br.y - tl.y;
+    if (!zero_content && (m_capsule->border_flags.t || tl.y > 0)) Normalize(inside, NormalizeDirection::Top);
+    if (!zero_content && (m_capsule->border_flags.b || br.y < 1)) Normalize(inside, NormalizeDirection::Bottom);
+    if (m_capsule->border_flags.l || tl.x > 0) Normalize(inside, NormalizeDirection::Left);
+    if (m_capsule->border_flags.r || br.x < 1) Normalize(inside, NormalizeDirection::Right);
+    inside.outer_border.t = zero_content ? 0 : (m_capsule->border_flags.t ? (content.m_border_flags.t ? 0 : 1) : 0);
+    inside.outer_border.b = zero_content ? 0 : (m_capsule->border_flags.b ? (content.m_border_flags.b ? 0 : 1) : 0);
+    inside.outer_border.l = m_capsule->border_flags.l ? (content.m_border_flags.l ? 2 : 1) : 0;
+    inside.outer_border.r = m_capsule->border_flags.r ? (content.m_border_flags.r ? 2 : 1) : 0;
+    if (zero_content) {
+        inside.box = {tl.x, 0, br.x - tl.x, 1};
+        PlaceZeroSegmentCenter(inside, (tl.y + br.y) * 0.5f);
+    } else {
+        inside.box = {tl.x, tl.y, br.x - tl.x, br.y - tl.y};
     }
+    RecordLayerRatio(base, before_base);
+    RecordLayerRatio(inside, before_inside);
 
-    // 处理边界
-    ret.m_border_flags.l = m_border_flags.l;
-    ret.m_border_flags.r = m_border_flags.r;
-    ret.m_border_flags.t = m_border_flags.t;
-    ret.m_border_flags.b = m_border_flags.b;
-    // 根据content的边界情况更新
-    if (tl.x == 0) {
-        ret.m_border_flags.l |= content.m_border_flags.l;
-    }
-    if (std::abs(br.x - 1.0f) < FLT_EPSILON) {
-        ret.m_border_flags.r |= content.m_border_flags.r;
-    }
-    if (tl.y == 0) {
-        ret.m_border_flags.t |= content.m_border_flags.t;
-    }
-    if (std::abs(br.y - 1.0f) < FLT_EPSILON) {
-        ret.m_border_flags.b |= content.m_border_flags.b;
-    }
-
-    // 处理间距
+    ret.m_border_flags = m_border_flags;
+    if (tl.x == 0) ret.m_border_flags.l |= content.m_border_flags.l;
+    if (std::abs(br.x - 1.0f) < FLT_EPSILON) ret.m_border_flags.r |= content.m_border_flags.r;
+    if (tl.y == 0) ret.m_border_flags.t |= content.m_border_flags.t;
+    if (std::abs(br.y - 1.0f) < FLT_EPSILON) ret.m_border_flags.b |= content.m_border_flags.b;
     ret.m_v_segments = final_segments;
-
     return ret;
 }
 
 std::vector<PathData> qin::Jianzi::RenderPath() const {
-    if (!s_library_styler) return {};
-    tiny_utf8::string name = m_name;
-    if (name.length() == 2 && name[0] == U'!') {
-        return s_library_styler->RenderChar(name[1]);
-    }
+    if (!s_renderer || !m_node) return {};
     std::vector<Stroke> strokes;
-
-    float stroke_width = s_library_styler->GetStrokeWidth();
-
-    if (m_node) {
-        CollectStrokes(
-            *m_node,
-            BoundingBox{HALF_STROKE_WIDTH, HALF_STROKE_WIDTH, 1.0f - MAX_STROKE_WIDTH, 1.0f - MAX_STROKE_WIDTH},
-            stroke_width, strokes);
+    CollectStrokes(*m_node, BoundingBox{}, 1.0f, strokes);
+    auto paths = s_renderer->Render(strokes);
+    for (auto& command : paths) {
+        for (auto& point : command.pts) {
+            point.x = (point.x - s_layout.normalization_tx) / s_layout.normalization_scale;
+            point.y = (point.y - s_layout.normalization_ty) / s_layout.normalization_scale;
+        }
     }
-
-    return s_library_styler->RenderPath(strokes);
+    return paths;
 }
 
 const char* Jianzi::GetName() const { return m_name.c_str(); }
@@ -1051,14 +933,16 @@ Jianzi::BorderFlags Jianzi::GetBorderFlags() const { return m_border_flags; }
 int Jianzi::GetSegments() const { return m_v_segments; }
 
 BoundingBox Jianzi::TightBoundingBox(const Node& node) {
-    // 获得所有笔画
     std::vector<Stroke> strokes;
-    CollectStrokes(node, BoundingBox(), 0.1f, strokes);
+    CollectStrokes(node, BoundingBox(), 1.0f, strokes);
 
     // 获取坐标最大最小值
-    float x_min = 1.0f, x_max = 0.0f, y_min = 1.0f, y_max = 0.0f;
+    float x_min = std::numeric_limits<float>::max(), x_max = std::numeric_limits<float>::lowest();
+    float y_min = std::numeric_limits<float>::max(), y_max = std::numeric_limits<float>::lowest();
+    bool has_point = false;
     for (auto& s : strokes) {
         for (auto& v : s.vertice) {
+            has_point = true;
             if (v.pt.x < x_min) {
                 x_min = v.pt.x;
             }
@@ -1076,70 +960,120 @@ BoundingBox Jianzi::TightBoundingBox(const Node& node) {
 
     // 生成包围盒
     BoundingBox box;
-    if (x_min < x_max) {
+    if (has_point) {
         box.x = x_min;
-        box.w = x_max - x_min;
-    }
-    if (y_min < y_max) {
         box.y = y_min;
-        box.h = y_max - y_min;
+        box.w = x_min < x_max ? x_max - x_min : 1.0f;
+        box.h = y_min < y_max ? y_max - y_min : 1.0f;
     }
 
     return box;
 }
 
-void Jianzi::CollectStrokes(const Node& node, const BoundingBox& parent_box, float stroke_width,
-                            std::vector<Stroke>& strokes) {
-    // 求实际box大小
-    BoundingBox box = parent_box * node.box;
-
-    // TODO: 计算box面积，求缩放系数
-    float area = box.w * box.h;
-    // 如果有子节点，合理预估实际计算area时按一半来计算
-    if (node.first || node.second) {
-        area *= 0.5f;
+float Jianzi::LayerWeight(const Node& node) {
+    float result = 1.0f;
+    for (const auto ratio : node.layer_ratios) {
+        result *= s_layout.weight_area * std::sqrt(std::max(0.0f, ratio)) + s_layout.weight_base;
     }
-    float weight = 0.7f * std::sqrt(area) + 0.3f;
+    return result;
+}
 
-    box.x += node.outer_border.l * stroke_width * weight;
-    box.y += node.outer_border.t * stroke_width * weight;
-    box.w -= (node.outer_border.l + node.outer_border.r) * stroke_width * weight;
-    box.h -= (node.outer_border.t + node.outer_border.b) * stroke_width * weight;
+float Jianzi::MaximumStrokeWidth(const Node& node, float inherited_weight) {
+    const auto weight = inherited_weight * LayerWeight(node);
+    float result = 0;
+    for (const auto& stroke : node.strokes) result = std::max(result, stroke.width * weight);
+    if (node.first) result = std::max(result, MaximumStrokeWidth(*node.first, weight));
+    if (node.second) result = std::max(result, MaximumStrokeWidth(*node.second, weight));
+    return result;
+}
 
-    // 计算笔画实际大小
+float Jianzi::NodeArea(const Node& node) { return std::abs(node.box.w * node.box.h); }
+
+float Jianzi::RecordLayerRatio(Node& node, float before_area) {
+    const auto ratio = before_area > 1e-12f ? NodeArea(node) / before_area : 1.0f;
+    node.layer_ratios.push_back(std::isfinite(ratio) && ratio >= 0 ? ratio : 1.0f);
+    return node.layer_ratios.back();
+}
+
+void Jianzi::PlaceBody(Node& node, bool horizontal, float start, float body_size, float fixed_start,
+                       float fixed_end) {
+    const auto source_body = std::max(1e-9f, 1.0f - fixed_start - fixed_end);
+    const auto scale = std::max(0.0f, body_size) / source_body;
+    const auto offset = start + fixed_start - scale * fixed_start;
+    if (horizontal) {
+        node.box.x = offset + scale * node.box.x;
+        node.box.w *= scale;
+    } else {
+        node.box.y = offset + scale * node.box.y;
+        node.box.h *= scale;
+    }
+}
+
+float Jianzi::SkeletonVerticalCenter(const Node& node) {
+    float minimum = std::numeric_limits<float>::max();
+    float maximum = std::numeric_limits<float>::lowest();
+    std::function<void(const Node&, const BoundingBox&)> collect = [&](const Node& current,
+                                                                       const BoundingBox& parent) {
+        const auto box = parent * current.box;
+        for (const auto& stroke : current.strokes) {
+            for (const auto& vertex : stroke.vertice) {
+                const auto point = box * vertex.pt;
+                minimum = std::min(minimum, point.y);
+                maximum = std::max(maximum, point.y);
+            }
+        }
+        if (current.first) collect(*current.first, box);
+        if (current.second) collect(*current.second, box);
+    };
+    collect(node, BoundingBox{});
+    return minimum <= maximum ? (minimum + maximum) * 0.5f : 0.5f;
+}
+
+void Jianzi::PlaceZeroSegmentCenter(Node& node, float target) {
+    node.box.y += target - SkeletonVerticalCenter(node);
+}
+
+void Jianzi::CollectStrokes(const Node& node, const BoundingBox& parent_box, float inherited_weight,
+                            std::vector<Stroke>& strokes) {
+    BoundingBox box = parent_box * node.box;
+    const auto weight = inherited_weight * LayerWeight(node);
+    box.x += node.outer_border.l * s_layout.border_width * weight;
+    box.y += node.outer_border.t * s_layout.border_width * weight;
+    box.w -= (node.outer_border.l + node.outer_border.r) * s_layout.border_width * weight;
+    box.h -= (node.outer_border.t + node.outer_border.b) * s_layout.border_width * weight;
     for (auto& s : node.strokes) {
         Stroke ns = s;
-        // 权重
-        ns.weight *= weight;
-        // 笔画缩放
+        ns.width *= weight;
         for (auto& v : ns.vertice) {
             v.pt = box * v.pt;
         }
         strokes.push_back(ns);
     }
-
-    // 获取各个子node的笔画
-    if (node.first) {
-        CollectStrokes(*node.first, box, stroke_width, strokes);
-    }
-    if (node.second) {
-        CollectStrokes(*node.second, box, stroke_width, strokes);
-    }
+    if (node.first) CollectStrokes(*node.first, box, weight, strokes);
+    if (node.second) CollectStrokes(*node.second, box, weight, strokes);
 }
 
-void Jianzi::Normalize(Node& node, NormalizeDirection dir) {
-    // 获取当前最小包围盒
+Jianzi::FixedInsets Jianzi::Normalize(Node& node, NormalizeDirection dir) {
     auto tight_box = TightBoundingBox(node);
     float xa = tight_box.x;
     float xb = tight_box.x + tight_box.w;
     float ya = tight_box.y;
     float yb = tight_box.y + tight_box.h;
 
-    // 根据最小包围盒反算归一化所需包围盒
-    // 包围盒计算方式：px'=w*px+x, py'=h*py+y
+    const auto directions = static_cast<int>(dir);
+    const bool top = directions & static_cast<int>(NormalizeDirection::Top);
+    const bool bottom = directions & static_cast<int>(NormalizeDirection::Bottom);
+    const bool left = directions & static_cast<int>(NormalizeDirection::Left);
+    const bool right = directions & static_cast<int>(NormalizeDirection::Right);
+    const bool both_x = left && right;
+    const bool both_y = top && bottom;
+    FixedInsets fixed;
+    if (bottom && !both_y) fixed.t = std::max(0.0f, ya);
+    if (top && !both_y) fixed.b = std::max(0.0f, 1.0f - yb);
+    if (right && !both_x) fixed.l = std::max(0.0f, xa);
+    if (left && !both_x) fixed.r = std::max(0.0f, 1.0f - xb);
     BoundingBox norm_box;
-
-    if ((int)dir & (int)NormalizeDirection::Top) {
+    if (top && yb - ya > 1e-9f) {
         BoundingBox box;
         // 向上归一化：h*ya+y=0, h*yb+y=yb
         box.h = yb / (yb - ya);
@@ -1147,7 +1081,7 @@ void Jianzi::Normalize(Node& node, NormalizeDirection dir) {
 
         norm_box = norm_box * box;
     }
-    if ((int)dir & (int)NormalizeDirection::Bottom) {
+    if (bottom && yb - ya > 1e-9f) {
         BoundingBox box;
         // 向下归一化：h*ya+y=ya, h*yb+y=1
         box.h = (1.0f - ya) / (yb - ya);
@@ -1155,7 +1089,7 @@ void Jianzi::Normalize(Node& node, NormalizeDirection dir) {
 
         norm_box = norm_box * box;
     }
-    if ((int)dir & (int)NormalizeDirection::Left) {
+    if (left && xb - xa > 1e-9f) {
         BoundingBox box;
         // 向上归一化：w*xa+x=0, w*xb+x=xb
         box.w = xb / (xb - xa);
@@ -1163,7 +1097,7 @@ void Jianzi::Normalize(Node& node, NormalizeDirection dir) {
 
         norm_box = norm_box * box;
     }
-    if ((int)dir & (int)NormalizeDirection::Right) {
+    if (right && xb - xa > 1e-9f) {
         BoundingBox box;
         // 向下归一化：w*xa+x=xa, w*xb+x=1
         box.w = (1.0f - xa) / (xb - xa);
@@ -1173,6 +1107,7 @@ void Jianzi::Normalize(Node& node, NormalizeDirection dir) {
     }
 
     NormalizeFunc(node, norm_box);
+    return fixed;
 }
 
 void Jianzi::NormalizeFunc(Node& node, const BoundingBox& box) {
@@ -1183,13 +1118,8 @@ void Jianzi::NormalizeFunc(Node& node, const BoundingBox& box) {
         }
     }
 
-    // 修改各个子node的笔画
-    if (node.first) {
-        NormalizeFunc(*node.first, box);
-    }
-    if (node.second) {
-        NormalizeFunc(*node.second, box);
-    }
+    if (node.first) node.first->box = box * node.first->box;
+    if (node.second) node.second->box = box * node.second->box;
 }
 
 std::unique_ptr<Jianzi::Node> Jianzi::Node::Clone(const Jianzi::Node& node) {
@@ -1197,6 +1127,7 @@ std::unique_ptr<Jianzi::Node> Jianzi::Node::Clone(const Jianzi::Node& node) {
     ret->box = node.box;
     ret->strokes = node.strokes;
     ret->outer_border = node.outer_border;
+    ret->layer_ratios = node.layer_ratios;
     if (node.first) {
         ret->first = Clone(*node.first);
     }

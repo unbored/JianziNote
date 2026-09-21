@@ -16,8 +16,6 @@ set(MODULE_LIBRARIES
 )
 
 find_package(tinyutf8 CONFIG REQUIRED)
-find_package(Freetype REQUIRED)
-
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin/${MODULE_NAME})
 
 add_executable(${MODULE_NAME} ${MODULE_SOURCE})

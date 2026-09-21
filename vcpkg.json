@@ -2,7 +2,6 @@
     "name": "jianzinote",
     "version-string": "latest",
     "dependencies": [
-      "sqlitecpp",
       "nlohmann-json",
       "tinyutf8",
       "magic-enum",
