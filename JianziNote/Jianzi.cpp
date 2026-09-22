@@ -199,6 +199,10 @@ JianziLibrary::JianziLibrary(JianziLibrary&& other) noexcept = default;
 
 JianziLibrary& JianziLibrary::operator=(JianziLibrary&& other) noexcept = default;
 
+JianziLibrary::LayoutMetrics JianziLibrary::GetLayoutMetrics() const {
+    return {m_context->m_layout.units_per_em, m_context->m_layout.baseline_y};
+}
+
 Jianzi::Jianzi(const JianziContext& context) : m_context(context) {}
 
 Jianzi::Jianzi(const JianziContext& context, const char* name) : m_context(context), m_name(name) {

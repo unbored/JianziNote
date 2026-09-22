@@ -169,6 +169,12 @@ class Jianzi {
 // 只借用该状态，因此 JianziLibrary 必须比所有相关 Jianzi 活得更久。
 class JianziLibrary {
  public:
+  // 与 RenderPath() 输出相同坐标系中的排版指标。
+  struct LayoutMetrics {
+    float units_per_em = 1000.0f;
+    float baseline_y = 880.0f;
+  };
+
   ~JianziLibrary();
 
   JianziLibrary(const JianziLibrary &) = delete;
@@ -179,6 +185,9 @@ class JianziLibrary {
 
   // 从内存加载完整的 CBOR 字库。缓冲区只需在调用期间保持有效。
   static JianziLibrary Load(const std::uint8_t *data, std::size_t size);
+
+  // 获取字库排版指标，供外部排版系统缩放并对齐减字。
+  LayoutMetrics GetLayoutMetrics() const;
 
   // 根据公式生成减字。
   Jianzi Parse(const char *u8_str) const;

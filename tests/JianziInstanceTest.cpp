@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -38,6 +39,16 @@ int main(int argc, char** argv) {
   auto secondLibrary = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
   libraryBytes.clear();
   libraryBytes.shrink_to_fit();
+
+  const auto firstMetrics = firstLibrary.GetLayoutMetrics();
+  const auto secondMetrics = secondLibrary.GetLayoutMetrics();
+  if (!std::isfinite(firstMetrics.units_per_em) || firstMetrics.units_per_em <= 0 ||
+      !std::isfinite(firstMetrics.baseline_y) ||
+      firstMetrics.units_per_em != secondMetrics.units_per_em ||
+      firstMetrics.baseline_y != secondMetrics.baseline_y) {
+    std::cerr << "The loaded library returned invalid or inconsistent layout metrics.\n";
+    return 1;
+  }
 
   const auto firstFormula = firstLibrary.ParseNatural(argv[2]);
   const auto secondFormula = secondLibrary.ParseNatural(argv[2]);

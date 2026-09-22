@@ -182,6 +182,9 @@ std::string jianzi_str = "大九挑七";
 // 从内存加载 StrokeDesc v2 减字库；library 必须比由它生成的 Jianzi 存活得更久
 auto library = JianziLibrary::Load(library_data.data(), library_data.size());
 
+// 排版指标与 RenderPath() 的输出使用相同的设计单位坐标系
+const auto metrics = library.GetLayoutMetrics();
+
 // 将一个自然表述字串转化为算式，然后进行解析
 const auto formula = library.ParseNatural(jianzi_str.c_str());
 auto jianzi = library.Parse(formula.c_str());
