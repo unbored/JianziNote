@@ -5,14 +5,11 @@
 
 #include "Jianzi.hpp"
 
-#include <tinyutf8/tinyutf8.h>
-
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <functional>
 #include <limits>
-#include <magic_enum/magic_enum.hpp>
 #include <memory>
 #include <optional>
 #include <set>
@@ -23,6 +20,7 @@
 
 #include "Cbor.hpp"
 #include "StrokeDescRenderer.hpp"
+#include "Utf8.hpp"
 
 namespace qin
 
@@ -30,29 +28,16 @@ namespace qin
 
 namespace {
 
-enum class JianziType {
-    Other,
-    Left,
-    LeftAlone,
-    Number,
-    Main,
-    MainComplex,
-    MainShu,
-    GraceAbove,
-    GraceSide,
-    Side,
-};
-
 struct JianziInfo {
     std::string name;
-    JianziType type = JianziType::Other;
+    std::string type = "Other";
 };
 
 }  // namespace
 
 struct Jianzi::LibraryData {
     struct Glyph {
-        JianziType type = JianziType::Other;
+        std::string type = "Other";
         BorderFlags border_flags;
         int vertical_segments = 1;
         std::optional<Capsule> capsule;
@@ -78,6 +63,12 @@ namespace {
 bool Flag(const nlohmann::json& flags, const char* long_name, const char* short_name) {
     if (flags.contains(long_name)) return flags.at(long_name).get<bool>();
     return flags.value(short_name, false);
+}
+
+VertexRegion ParseVertexRegion(const std::string& region) {
+    if (region == "Medium") return VertexRegion::Medium;
+    if (region == "Bottom") return VertexRegion::Bottom;
+    return VertexRegion::Top;
 }
 
 }  // namespace
@@ -141,8 +132,7 @@ std::unique_ptr<JianziContext> JianziContext::Create(const nlohmann::json& libra
     auto context = std::make_unique<JianziContext>();
     for (auto source = library.at("glyphs").begin(); source != library.at("glyphs").end(); ++source) {
         Jianzi::LibraryData::Glyph glyph;
-        glyph.type = magic_enum::enum_cast<JianziType>(source.value().at("type").get<std::string>())
-                         .value_or(JianziType::Other);
+        glyph.type = source.value().value("type", std::string{"Other"});
         const auto& flags = source.value().at("border_flags");
         glyph.border_flags = {Flag(flags, "top", "t"), Flag(flags, "bottom", "b"),
                               Flag(flags, "left", "l"), Flag(flags, "right", "r")};
@@ -169,8 +159,7 @@ std::unique_ptr<JianziContext> JianziContext::Create(const nlohmann::json& libra
             for (const auto& vertex : stroke_source.at("nodes")) {
                 stroke.vertice.push_back(
                     {{vertex.at("x").get<float>(), vertex.at("y").get<float>()},
-                     magic_enum::enum_cast<VertexRegion>(vertex.value("region", std::string{"Top"}))
-                         .value_or(VertexRegion::Top)});
+                     ParseVertexRegion(vertex.value("region", std::string{"Top"}))});
             }
             glyph.strokes.push_back(std::move(stroke));
         }
@@ -188,12 +177,11 @@ std::unique_ptr<JianziContext> JianziContext::Create(const nlohmann::json& libra
         if (name.empty() || target.empty() || !context->m_library.aliases.emplace(name, target).second) {
             throw std::runtime_error("Alias names and targets must be non-empty and names must be unique.");
         }
-        context->m_aliasList.push_back(
-            {name, magic_enum::enum_cast<JianziType>(alias.value("type", std::string{"Other"}))
-                       .value_or(JianziType::Other)});
+        context->m_aliasList.push_back({name, alias.value("type", std::string{"Other"})});
     }
     const auto compare = [](const JianziInfo& a, const JianziInfo& b) {
-        tiny_utf8::string an = a.name, bn = b.name;
+        const auto an = utf8::Decode(a.name);
+        const auto bn = utf8::Decode(b.name);
         return an.length() != bn.length() ? an.length() > bn.length() : an > bn;
     };
     std::sort(context->m_jianziList.begin(), context->m_jianziList.end(), compare);
@@ -300,8 +288,7 @@ const std::map<char32_t, JianziOperator> c_jianzi_operators = {
 Jianzi JianziLibrary::Parse(const char* u8_str) const {
     Jianzi result(*m_context);
 
-    using tiny_utf8::string;
-    string str(u8_str);
+    auto str = utf8::Decode(u8_str);
 
     // 清除所有空格
     auto ws_pos = str.find(U' ');
@@ -311,7 +298,7 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
     }
 
     // 前后添加括号，有利于后续处理
-    str = "(" + str + ")";
+    str = U"(" + str + U")";
 
     std::stack<Jianzi> values;
     std::stack<char32_t> operators;
@@ -344,9 +331,9 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
             // 找到一个运算符，开始处理
             if (sub_pos != str.begin()) {
                 // 不在字符串开头，先处理值
-                string sub = str.substr(0, sub_pos - str.begin());
+                const auto sub = str.substr(0, sub_pos - str.begin());
 
-                const std::string name = sub.cpp_str();
+                const auto name = utf8::Encode(sub);
                 if (m_context->m_library.glyphs.find(name) != m_context->m_library.glyphs.end()) {
                     values.push(Jianzi(*m_context, name.c_str()));
                 } else {
@@ -355,7 +342,7 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                     if (++alias_expansions > 1024) {
                         throw std::runtime_error("Alias expansion did not terminate; the library probably contains a cycle.");
                     }
-                    str = "(" + string(alias->second) + ")" + str.substr(sub_pos - str.begin());
+                    str = U"(" + utf8::Decode(alias->second) + U")" + str.substr(sub_pos - str.begin());
                     continue;
                 }
             }
@@ -395,10 +382,11 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                     return Jianzi(*m_context);
                 }
                 // 生成算式
-                string sub = str.substr(curr_quote + 1, next_quote - 1);
-                string rep = ParseNatural(sub.c_str());
+                const auto sub = str.substr(curr_quote + 1, next_quote - 1);
+                const auto sub_utf8 = utf8::Encode(sub);
+                const auto rep = utf8::Decode(ParseNatural(sub_utf8.c_str()));
                 // 替换内容
-                str = "(" + rep + ")" + str.substr(next_quote + 1);
+                str = U"(" + rep + U")" + str.substr(next_quote + 1);
                 continue;
             } else {
                 // 普通算符
@@ -428,7 +416,8 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
     }
     if (str.length() > 0) {
         // 已经没有运算符，剩下的是值
-        values.push(Jianzi(*m_context, str.c_str()));
+        const auto name = utf8::Encode(str);
+        values.push(Jianzi(*m_context, name.c_str()));
     }
 
     // 将剩下的运算符算完
@@ -450,9 +439,8 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
 }
 
 std::string JianziLibrary::ParseNatural(const char* u8_str) const {
-    using tiny_utf8::string;
     // 初始化输入
-    string input(u8_str);
+    auto input = utf8::Decode(u8_str);
     // 清除所有空格
     auto ws_pos = input.find(U' ');
     while (ws_pos != input.npos) {
@@ -475,7 +463,7 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
 
     auto MarkInput = [&input, &input_marks, &info_list](const std::vector<JianziInfo>& input_list) {
         for (auto& info : input_list) {
-            string info_name = info.name;
+            const auto info_name = utf8::Decode(info.name);
             size_t info_length = info_name.length();
             // 寻找所有点位
             auto pos = input.find(info_name);
@@ -532,14 +520,14 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
     }
 
     // 开始根据规则进行运算符号拼装
-    string ret;
+    std::string ret;
 
     // 处理连串数字。左闭右开区间
     auto ProcessNumbers = [&](size_t start_pos, size_t end_pos) {
         size_t p = start_pos;
         ret += "(" + info_list[p++].name;
         while (p < end_pos) {
-            if (info_list[p].type != JianziType::Number) {
+            if (info_list[p].type != "Number") {
                 // 后方已不是数字，终止
                 break;
             }
@@ -555,13 +543,13 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
     //     size_t p = start_pos;
     //     ret += info_list[p++].name;
 
-    //     if (info_list[start_pos].type == JianziType::LeftAlone)
+    //     if (info_list[start_pos].type == "LeftAlone")
     //     {
     //         // 单独指法，返回
     //         return p;
     //     }
 
-    //     if (p > end_pos || info_list[p].type != JianziType::Number)
+    //     if (p > end_pos || info_list[p].type != "Number")
     //     {
     //         // 后方无内容或不是数字则返回
     //         return p;
@@ -574,12 +562,12 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
     // };
 
     size_t pos = 0;
-    JianziType prev_type;
+    std::string prev_type;
     while (pos < info_list.size()) {
         if (pos > 0) {
             // 跟着前面的指法，加一个运算符
-            if (prev_type == JianziType::Left || prev_type == JianziType::LeftAlone) {
-                // if (info_list[pos].type == JianziType::GraceAbove)
+            if (prev_type == "Left" || prev_type == "LeftAlone") {
+                // if (info_list[pos].type == "GraceAbove")
                 // {
                 //     // 把修饰符归于上半，比例会更好看一些
                 //     ret += "/";
@@ -589,11 +577,11 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
                 ret += "^";
                 // }
             }
-            // else if (prev_type == JianziType::GraceAbove)
+            // else if (prev_type == "GraceAbove")
             // {
             //     ret += "^";
             // }
-            else if (prev_type == JianziType::GraceSide) {
+            else if (prev_type == "GraceSide") {
                 ret += "<";
             } else {
                 ret += "/";
@@ -604,17 +592,17 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
         ret += info_list[pos++].name;
 
         // 左手指法
-        if (prev_type == JianziType::Left) {
+        if (prev_type == "Left") {
             // 后续是数字，处理数字
-            if (pos < info_list.size() && info_list[pos].type == JianziType::Number) {
+            if (pos < info_list.size() && info_list[pos].type == "Number") {
                 ret += "&";
                 pos = ProcessNumbers(pos, info_list.size());
             }
         }
 
         // 主字
-        else if (prev_type == JianziType::Main) {
-            if (pos < info_list.size() && info_list[pos].type == JianziType::Number) {
+        else if (prev_type == "Main") {
+            if (pos < info_list.size() && info_list[pos].type == "Number") {
                 // 后续跟的是数字，全部放入
                 ret += "*";
                 pos = ProcessNumbers(pos, info_list.size());
@@ -622,47 +610,47 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
         }
 
         // 复杂减字
-        else if (prev_type == JianziType::MainComplex || prev_type == JianziType::MainShu) {
+        else if (prev_type == "MainComplex" || prev_type == "MainShu") {
             // 后续还有内容
             if (pos < info_list.size()) {
                 // 确定运算符
-                string op = "&";
-                if (prev_type == JianziType::MainShu) {
+                std::string op = "&";
+                if (prev_type == "MainShu") {
                     op = "|";
                 }
 
                 // 后续跟的是数字，为弦号
-                if (info_list[pos].type == JianziType::Number) {
+                if (info_list[pos].type == "Number") {
                     // 对于有竖笔的减字，单个数字应当放在下方。因此需要先计算数字个数
                     size_t number_count = 0;
                     size_t n = pos;
                     while (n < info_list.size()) {
-                        if (info_list[n++].type == JianziType::Number) {
+                        if (info_list[n++].type == "Number") {
                             ++number_count;
                         } else {
                             break;
                         }
                     }
-                    if (number_count == 1 && prev_type == JianziType::MainShu) {
+                    if (number_count == 1 && prev_type == "MainShu") {
                         ret += "/(" + info_list[pos++].name;
                     } else {
                         ret += "*(" + info_list[pos++].name;
                     }
                     // 后续继续跟的是数字，再取一个
-                    if (pos < info_list.size() && info_list[pos].type == JianziType::Number) {
+                    if (pos < info_list.size() && info_list[pos].type == "Number") {
                         ret += op + info_list[pos++].name;
                     }
                     ret += ")";
                 }
                 // 后续跟的是左手指法
-                else if (info_list[pos].type == JianziType::Left || info_list[pos].type == JianziType::LeftAlone) {
+                else if (info_list[pos].type == "Left" || info_list[pos].type == "LeftAlone") {
                     // 多加一个括号便于处理
                     ret += "*((" + info_list[pos++].name;
                     // 后续为左手指法，先统计指法后的数字个数，应当留出一个数字作为弦
                     size_t number_count = 0;
                     size_t n = pos;
                     while (n < info_list.size()) {
-                        if (info_list[n++].type == JianziType::Number) {
+                        if (info_list[n++].type == "Number") {
                             ++number_count;
                         } else {
                             break;
@@ -680,13 +668,13 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
 
                     // 后续再接一个左手指法
                     if (pos < info_list.size() &&
-                        (info_list[pos].type == JianziType::Left || info_list[pos].type == JianziType::LeftAlone)) {
+                        (info_list[pos].type == "Left" || info_list[pos].type == "LeftAlone")) {
                         ret += op + "(" + info_list[pos++].name;
                         // 再来一次：后续为左手指法，先统计指法后的数字个数，应当留出一个数字作为弦
                         size_t number_count = 0;
                         size_t n = pos;
                         while (n < info_list.size()) {
-                            if (info_list[n++].type == JianziType::Number) {
+                            if (info_list[n++].type == "Number") {
                                 ++number_count;
                             } else {
                                 break;
@@ -709,7 +697,7 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
         }
     }
 
-    return ret.cpp_str();
+    return ret;
 }
 
 Jianzi Jianzi::operator&(const Jianzi& right) const {

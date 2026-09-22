@@ -198,8 +198,7 @@ auto result = renderer.Render(path_data);
 
 ### 项目依赖
 
-- [tiny-utf8](https://github.com/DuffsDevice/tiny-utf8)
-- [magic_enum](https://github.com/Neargye/magic_enum)
+- [UTF8-CPP](https://github.com/nemtrif/utfcpp)
 - [nlohmann/json](https://github.com/nlohmann/json)
 - [FreeType2](https://freetype.org/)（仅可选的`JianziFontReader`目标需要）
 
@@ -207,7 +206,7 @@ auto result = renderer.Render(path_data);
 
 ### 兼容性
 
-编译器要求C++17，以使用magic_enum的特性。
+编译器要求支持C++17。
 
 本项目在MacOS Ventura+Clang 12和Windows 11+MSVC 2019下编译通过。
 

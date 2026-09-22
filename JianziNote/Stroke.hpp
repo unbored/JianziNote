@@ -13,7 +13,7 @@
 namespace qin {
 
 // 标记点属于哪个区域，影响变形时是否跟随 capsule。
-enum class VertexRegion { Other = -1, Top = 0, Medium, Bottom };
+enum class VertexRegion { Top = 0, Medium = 1, Bottom = 2 };
 
 struct StrokeVertex {
   Point2f pt;

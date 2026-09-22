@@ -3,8 +3,7 @@
   "version-string": "latest",
   "dependencies": [
     "nlohmann-json",
-    "tinyutf8",
-    "magic-enum"
+    "utfcpp"
   ],
   "default-features": [
     "font-reader"

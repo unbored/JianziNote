@@ -48,6 +48,10 @@ if(BUILD_TESTING)
     target_include_directories(stroke-desc-runtime-test PRIVATE ${PROJECT_SOURCE_DIR}/JianziNote)
     add_test(NAME stroke_desc_runtime COMMAND stroke-desc-runtime-test)
 
+    add_executable(utf8-test tests/Utf8Test.cpp)
+    target_link_libraries(utf8-test PRIVATE JianziNote)
+    add_test(NAME utf8 COMMAND utf8-test)
+
     add_executable(jianzi-instance-test tests/JianziInstanceTest.cpp)
     target_link_libraries(jianzi-instance-test PRIVATE JianziNote)
     target_include_directories(jianzi-instance-test PRIVATE ${PROJECT_SOURCE_DIR}/JianziNote)

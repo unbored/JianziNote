@@ -15,7 +15,6 @@ set(MODULE_LIBRARIES
     JianziNote
 )
 
-find_package(tinyutf8 CONFIG REQUIRED)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin/${MODULE_NAME})
 
 add_executable(${MODULE_NAME} ${MODULE_SOURCE})
