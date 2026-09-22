@@ -1,6 +1,10 @@
+#include <cstdint>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include "Jianzi.hpp"
 
@@ -23,8 +27,17 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  auto firstLibrary = qin::JianziLibrary::LoadFile(argv[1]);
-  auto secondLibrary = qin::JianziLibrary::LoadFile(argv[1]);
+  std::ifstream input(argv[1], std::ios::binary);
+  std::vector<std::uint8_t> libraryBytes{
+      std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  if (!input || libraryBytes.empty()) {
+    std::cerr << "Unable to read the library into memory.\n";
+    return 1;
+  }
+  auto firstLibrary = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
+  auto secondLibrary = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
+  libraryBytes.clear();
+  libraryBytes.shrink_to_fit();
 
   const auto firstFormula = firstLibrary.ParseNatural(argv[2]);
   const auto secondFormula = secondLibrary.ParseNatural(argv[2]);

@@ -5,7 +5,8 @@
 
 #pragma once
 
-#include <filesystem>
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -15,7 +16,6 @@ namespace qin::cbor {
 
 struct Error {
   std::string message;
-  std::filesystem::path path;
 };
 
 struct ReadResult {
@@ -25,13 +25,8 @@ struct ReadResult {
   explicit operator bool() const { return !error.has_value(); }
 };
 
-// Read one complete CBOR document from a file. This class deliberately knows
-// nothing about Jianzi's data schema; schema validation belongs to its caller.
-ReadResult Read(const std::filesystem::path& path);
-
-// Write one complete CBOR document to a file. Parent directories must already
-// exist so that callers retain control of their output layout.
-std::optional<Error> Write(const std::filesystem::path& path,
-                           const nlohmann::json& document);
+// Decode one complete CBOR document from memory. The input buffer only needs
+// to remain valid for the duration of this call.
+ReadResult Read(const std::uint8_t* data, std::size_t size);
 
 }  // namespace qin::cbor

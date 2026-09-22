@@ -64,6 +64,8 @@ struct Jianzi::LibraryData {
 };
 
 struct JianziContext {
+    static std::unique_ptr<JianziContext> Create(const nlohmann::json& library);
+
     Jianzi::LibraryData m_library;
     std::unique_ptr<StrokeDescRenderer> m_renderer;
     Jianzi::Layout m_layout;
@@ -80,12 +82,15 @@ bool Flag(const nlohmann::json& flags, const char* long_name, const char* short_
 
 }  // namespace
 
-JianziLibrary JianziLibrary::LoadFile(const std::filesystem::path& file) {
-    const auto result = cbor::Read(file);
+JianziLibrary JianziLibrary::Load(const std::uint8_t* data, std::size_t size) {
+    const auto result = cbor::Read(data, size);
     if (!result) {
         throw std::runtime_error(result.error->message);
     }
-    const auto& library = result.document;
+    return JianziLibrary(JianziContext::Create(result.document));
+}
+
+std::unique_ptr<JianziContext> JianziContext::Create(const nlohmann::json& library) {
     if (library.value("format", std::string{}) != "jianzinote-stroke-library" ||
         library.value("format_version", 0) != 2 || !library.contains("glyphs") ||
         !library.at("glyphs").is_object() || !library.contains("stroke_descs")) {
@@ -195,7 +200,7 @@ JianziLibrary JianziLibrary::LoadFile(const std::filesystem::path& file) {
     std::sort(context->m_aliasList.begin(), context->m_aliasList.end(), compare);
     context->m_renderer = std::move(renderer);
     context->m_layout = layout;
-    return JianziLibrary(std::move(context));
+    return context;
 }
 
 JianziLibrary::JianziLibrary(std::unique_ptr<JianziContext> context) : m_context(std::move(context)) {}

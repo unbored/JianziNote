@@ -5,11 +5,14 @@
 
 #include <BoundingBox.hpp>
 #include <Jianzi.hpp>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <regex>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "LilypondRenderer.hpp"
 
@@ -160,7 +163,7 @@ int main(int argc, char **argv) {
 
 #endif
 
-  std::string db_file = argv[1];
+  std::string db_file = argv_strs[1];
 
   // 创建一个set记录所有检测到的减字
   std::set<std::string> jianzi_str;
@@ -199,7 +202,18 @@ int main(int argc, char **argv) {
   }
 
   // 初始化减字系统
-  auto library = qin::JianziLibrary::LoadFile(db_file);
+  std::ifstream library_input(db_file, std::ios::binary);
+  if (!library_input) {
+    std::cerr << "Unable to open library file: " << db_file << std::endl;
+    return -1;
+  }
+  std::vector<std::uint8_t> library_data{
+      std::istreambuf_iterator<char>(library_input), std::istreambuf_iterator<char>()};
+  if (library_input.bad()) {
+    std::cerr << "Unable to read library file: " << db_file << std::endl;
+    return -1;
+  }
+  auto library = qin::JianziLibrary::Load(library_data.data(), library_data.size());
 
   // 根据提取结果输出文件
   std::ofstream fout("jianzidef.ly");

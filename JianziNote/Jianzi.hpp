@@ -5,7 +5,8 @@
 
 #pragma once
 
-#include <filesystem>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -176,7 +177,8 @@ class JianziLibrary {
   JianziLibrary(JianziLibrary &&other) noexcept;
   JianziLibrary &operator=(JianziLibrary &&other) noexcept;
 
-  static JianziLibrary LoadFile(const std::filesystem::path &file);
+  // 从内存加载完整的 CBOR 字库。缓冲区只需在调用期间保持有效。
+  static JianziLibrary Load(const std::uint8_t *data, std::size_t size);
 
   // 根据公式生成减字。
   Jianzi Parse(const char *u8_str) const;

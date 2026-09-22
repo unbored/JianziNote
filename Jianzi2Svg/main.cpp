@@ -3,8 +3,11 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -17,6 +20,15 @@
 #endif
 
 namespace {
+
+std::vector<std::uint8_t> ReadBinaryFile(const std::string& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("Unable to open library file: " + path);
+  std::vector<std::uint8_t> result{
+      std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  if (input.bad()) throw std::runtime_error("Unable to read library file: " + path);
+  return result;
+}
 
 #ifdef _WIN32
 std::vector<std::string> GetUtf8Arguments() {
@@ -52,7 +64,8 @@ int main(int argc, char** argv) {
   }
 
   try {
-    auto library = qin::JianziLibrary::LoadFile(arguments[1]);
+    const auto libraryData = ReadBinaryFile(arguments[1]);
+    auto library = qin::JianziLibrary::Load(libraryData.data(), libraryData.size());
     const auto formula = library.ParseNatural(arguments[2].c_str());
     const auto jianzi = library.Parse(formula.c_str());
     const auto svg = qin::SvgRenderer().Render(jianzi.RenderPath());

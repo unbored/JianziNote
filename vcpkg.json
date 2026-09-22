@@ -1,10 +1,20 @@
 {
-    "name": "jianzinote",
-    "version-string": "latest",
-    "dependencies": [
-      "nlohmann-json",
-      "tinyutf8",
-      "magic-enum",
-      "freetype"
-    ]
+  "name": "jianzinote",
+  "version-string": "latest",
+  "dependencies": [
+    "nlohmann-json",
+    "tinyutf8",
+    "magic-enum"
+  ],
+  "default-features": [
+    "font-reader"
+  ],
+  "features": {
+    "font-reader": {
+      "description": "Build the optional FreeType font reader",
+      "dependencies": [
+        "freetype"
+      ]
+    }
   }
+}

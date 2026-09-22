@@ -179,8 +179,8 @@ std::string library_file = "library.cbor";
 // 减字
 std::string jianzi_str = "大九挑七";
 
-// 加载 StrokeDesc v2 减字库；library 必须比由它生成的 Jianzi 存活得更久
-auto library = JianziLibrary::LoadFile(library_file);
+// 从内存加载 StrokeDesc v2 减字库；library 必须比由它生成的 Jianzi 存活得更久
+auto library = JianziLibrary::Load(library_data.data(), library_data.size());
 
 // 将一个自然表述字串转化为算式，然后进行解析
 const auto formula = library.ParseNatural(jianzi_str.c_str());
@@ -201,7 +201,9 @@ auto result = renderer.Render(path_data);
 - [tiny-utf8](https://github.com/DuffsDevice/tiny-utf8)
 - [magic_enum](https://github.com/Neargye/magic_enum)
 - [nlohmann/json](https://github.com/nlohmann/json)
-- [FreeType2](https://freetype.org/)
+- [FreeType2](https://freetype.org/)（仅可选的`JianziFontReader`目标需要）
+
+默认会构建独立的`JianziFontReader`目标。若只需要不含文件系统与字体依赖的核心库，可设置`JIANZINOTE_BUILD_FONT_READER=OFF`；使用vcpkg清单模式时也可关闭默认的`font-reader`特性。
 
 ### 兼容性
 
