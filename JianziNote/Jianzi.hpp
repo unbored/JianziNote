@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "BoundingBox.hpp"
@@ -19,6 +20,13 @@ namespace qin {
 class StrokeDescRenderer;
 class JianziLibrary;
 struct JianziContext;
+
+enum class JianziStatus {
+  Empty,
+  Renderable,
+  Fallback,
+  Missing,
+};
 
 // 减字统一以1为单位，上下左右各留半个笔画宽度
 class Jianzi {
@@ -58,6 +66,10 @@ class Jianzi {
   // 获取名称。减字名称会根据运算变化
   const char *GetName() const;
 
+  JianziStatus GetStatus() const noexcept;
+  std::string_view GetFallbackName() const noexcept;
+  const std::vector<std::string> &GetMissingNames() const noexcept;
+
   // 获取边界避让标记
   BorderFlags GetBorderFlags() const;
   // 获取纵向间隔数
@@ -80,6 +92,8 @@ class Jianzi {
     float capsule_weight_base = 0.5f;
   };
   std::string m_name;  // 减字名称
+  JianziStatus m_status = JianziStatus::Empty;
+  std::vector<std::string> m_missing_names;
 
   // 归一化方向
   enum class NormalizeDirection {
@@ -158,6 +172,7 @@ class Jianzi {
   explicit Jianzi(const JianziContext &context);
   Jianzi(const JianziContext &context, const char *u8_ch);
   void CheckContext(const Jianzi &other) const;
+  Jianzi MakeMissingCombination(const Jianzi &other, char operation) const;
   void CopyData(const Jianzi &other);
   void MoveData(Jianzi &&other);
 

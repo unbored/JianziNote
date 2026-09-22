@@ -189,6 +189,13 @@ const auto metrics = library.GetLayoutMetrics();
 const auto formula = library.ParseNatural(jianzi_str.c_str());
 auto jianzi = library.Parse(formula.c_str());
 
+// 缺少单个字时可交给外部字体 fallback；组合公式缺字时可列出缺失项
+if (jianzi.GetStatus() == JianziStatus::Fallback) {
+    auto fallback_name = jianzi.GetFallbackName();
+} else if (jianzi.GetStatus() == JianziStatus::Missing) {
+    const auto& missing_names = jianzi.GetMissingNames();
+}
+
 // 获得减字路径描述
 auto path_data = jianzi.RenderPath();
 

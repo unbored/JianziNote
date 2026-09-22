@@ -208,13 +208,22 @@ Jianzi::Jianzi(const JianziContext& context) : m_context(context) {}
 Jianzi::Jianzi(const JianziContext& context, const char* name) : m_context(context), m_name(name) {
     if (m_name.empty()) return;
     const auto found = m_context.m_library.glyphs.find(m_name);
-    if (found == m_context.m_library.glyphs.end()) return;
+    if (found == m_context.m_library.glyphs.end()) {
+        if (utf8::Decode(m_name).size() == 1) {
+            m_status = JianziStatus::Fallback;
+        } else {
+            m_status = JianziStatus::Missing;
+            m_missing_names.push_back(m_name);
+        }
+        return;
+    }
     const auto& glyph = found->second;
     m_border_flags = glyph.border_flags;
     m_v_segments = glyph.vertical_segments;
     if (glyph.capsule) m_capsule = std::make_unique<Capsule>(*glyph.capsule);
     m_node = std::make_unique<Node>();
     m_node->strokes = glyph.strokes;
+    m_status = JianziStatus::Renderable;
 }
 
 Jianzi::Jianzi(const Jianzi& other) : m_context(other.m_context) { CopyData(other); }
@@ -243,8 +252,36 @@ void Jianzi::CheckContext(const Jianzi& other) const {
     }
 }
 
+Jianzi Jianzi::MakeMissingCombination(const Jianzi& other, char operation) const {
+    if (m_status == JianziStatus::Empty || other.m_status == JianziStatus::Empty) {
+        throw std::invalid_argument("Cannot combine an empty Jianzi.");
+    }
+
+    Jianzi result(m_context);
+    result.m_name = "(" + m_name + operation + other.m_name + ")";
+    result.m_status = JianziStatus::Missing;
+    const auto append = [&result](const Jianzi& value) {
+        const auto add = [&result](const std::string& name) {
+            if (std::find(result.m_missing_names.begin(), result.m_missing_names.end(), name) ==
+                result.m_missing_names.end()) {
+                result.m_missing_names.push_back(name);
+            }
+        };
+        if (value.m_status == JianziStatus::Fallback) {
+            add(value.m_name);
+        } else if (value.m_status == JianziStatus::Missing) {
+            for (const auto& name : value.m_missing_names) add(name);
+        }
+    };
+    append(*this);
+    append(other);
+    return result;
+}
+
 void Jianzi::CopyData(const Jianzi& other) {
     m_name = other.m_name;
+    m_status = other.m_status;
+    m_missing_names = other.m_missing_names;
     if (other.m_node) {
         m_node = std::make_unique<Node>(*other.m_node);
     } else {
@@ -262,10 +299,13 @@ void Jianzi::CopyData(const Jianzi& other) {
 
 void Jianzi::MoveData(Jianzi&& other) {
     m_name = std::move(other.m_name);
+    m_status = other.m_status;
+    m_missing_names = std::move(other.m_missing_names);
     m_node = std::move(other.m_node);
     m_border_flags = other.m_border_flags;
     m_v_segments = other.m_v_segments;
     m_capsule = std::move(other.m_capsule);
+    other.m_status = JianziStatus::Empty;
 }
 
 struct JianziOperator {
@@ -301,6 +341,8 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
         ws_pos = str.find(U' ');
     }
 
+    if (str.empty()) return result;
+
     // 前后添加括号，有利于后续处理
     str = U"(" + str + U")";
 
@@ -312,8 +354,7 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
     auto Calc = [&values](char32_t op) {
         // std::cout << "Doing operation " << string(op) << std::endl;
         if (values.size() < 2) {
-            // 减字已不足两个，算式有误，返回空
-            return false;
+            throw std::invalid_argument("Jianzi operator is missing an operand.");
         }
 
         auto v2 = values.top();
@@ -322,8 +363,6 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
         values.pop();
 
         values.push(c_jianzi_operators.at(op).op(v1, v2));
-
-        return true;
     };
 
     while (str.length() > 0) {
@@ -342,12 +381,16 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                     values.push(Jianzi(*m_context, name.c_str()));
                 } else {
                     const auto alias = m_context->m_library.aliases.find(name);
-                    if (alias == m_context->m_library.aliases.end()) return Jianzi(*m_context);
-                    if (++alias_expansions > 1024) {
-                        throw std::runtime_error("Alias expansion did not terminate; the library probably contains a cycle.");
+                    if (alias == m_context->m_library.aliases.end()) {
+                        values.push(Jianzi(*m_context, name.c_str()));
+                    } else {
+                        if (++alias_expansions > 1024) {
+                            throw std::runtime_error(
+                                "Alias expansion did not terminate; the library probably contains a cycle.");
+                        }
+                        str = U"(" + utf8::Decode(alias->second) + U")" + str.substr(sub_pos - str.begin());
+                        continue;
                     }
-                    str = U"(" + utf8::Decode(alias->second) + U")" + str.substr(sub_pos - str.begin());
-                    continue;
                 }
             }
 
@@ -368,25 +411,21 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                         break;
                     } else {
                         // 进行运算
-                        if (!Calc(op)) {
-                            return Jianzi(*m_context);
-                        }
+                        Calc(op);
                     }
                 }
                 if (op != U'(') {
-                    // 最终没有停在左括号上，算式有误，返回空
-                    return Jianzi(*m_context);
+                    throw std::invalid_argument("Jianzi formula has unmatched parentheses.");
                 }
             } else if (c == U'\'') {
                 // 引用，寻找配对引用并置换
                 size_t curr_quote = sub_pos - str.begin();
                 size_t next_quote = str.find(U'\'', curr_quote + 1);
                 if (next_quote == str.npos) {
-                    // 没有配对，算式有误，返回空
-                    return Jianzi(*m_context);
+                    throw std::invalid_argument("Jianzi formula has an unmatched quote.");
                 }
                 // 生成算式
-                const auto sub = str.substr(curr_quote + 1, next_quote - 1);
+                const auto sub = str.substr(curr_quote + 1, next_quote - curr_quote - 1);
                 const auto sub_utf8 = utf8::Encode(sub);
                 const auto rep = utf8::Decode(ParseNatural(sub_utf8.c_str()));
                 // 替换内容
@@ -405,9 +444,7 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                     char32_t op = operators.top();
                     operators.pop();
                     // 进行运算
-                    if (!Calc(op)) {
-                        return Jianzi(*m_context);
-                    }
+                    Calc(op);
                     // 再将新运算符入栈
                     operators.push(c);
                 }
@@ -428,17 +465,16 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
     while (!operators.empty()) {
         char32_t op = operators.top();
         operators.pop();
-        // 进行运算
-        if (!Calc(op)) {
-            return Jianzi(*m_context);
+        if (op == U'(' || op == U')') {
+            throw std::invalid_argument("Jianzi formula has unmatched parentheses.");
         }
+        // 进行运算
+        Calc(op);
     }
 
-    // values里剩下的唯一一个值就是结果
-    // assert(values.size() <= 1);
-    if (!values.empty()) {
-        result = values.top();
-    }
+    if (values.empty()) return result;
+    if (values.size() != 1) throw std::invalid_argument("Jianzi formula is missing an operator.");
+    result = values.top();
     return result;
 }
 
@@ -501,16 +537,12 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
     // 再标记减字
     MarkInput(m_context->m_jianziList);
 
-    if (input_length == 1 && !input_marks[0]) {
-        return std::string();
-    } else {
-        // 检查是否所有位置均已处理
-        for (auto m : input_marks) {
-            if (!m) {
-                // 输入有问题，返回空
-                return std::string();
-            }
-        }
+    // 未知字符仍保留为独立项。单独出现时可由字体 fallback；
+    // 与其他项组合时，Parse 会将最终结果标记为 Missing。
+    for (size_t i = 0; i < input_length; ++i) {
+        if (input_marks[i]) continue;
+        info_list[i] = {utf8::Encode(std::u32string(1, input[i])), "Other"};
+        input_marks[i] = true;
     }
 
     // 把标记的空位移除，虽然可能比较耗时，但省去后续处理的麻烦
@@ -706,9 +738,13 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
 
 Jianzi Jianzi::operator&(const Jianzi& right) const {
     CheckContext(right);
+    if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
+        return MakeMissingCombination(right, '&');
+    }
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "&" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
+    ret.m_status = JianziStatus::Renderable;
     ret.m_node->first = std::make_unique<Node>(*m_node);
     ret.m_node->second = std::make_unique<Node>(*right.m_node);
     auto& left_node = *ret.m_node->first;
@@ -739,9 +775,13 @@ Jianzi Jianzi::operator&(const Jianzi& right) const {
 
 Jianzi Jianzi::operator|(const Jianzi& right) const {
     CheckContext(right);
+    if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
+        return MakeMissingCombination(right, '|');
+    }
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "|" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
+    ret.m_status = JianziStatus::Renderable;
     ret.m_node->first = std::make_unique<Node>(*m_node);
     ret.m_node->second = std::make_unique<Node>(*right.m_node);
     auto& left_node = *ret.m_node->first;
@@ -769,9 +809,13 @@ Jianzi Jianzi::operator|(const Jianzi& right) const {
 
 Jianzi Jianzi::operator<(const Jianzi& right) const {
     CheckContext(right);
+    if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
+        return MakeMissingCombination(right, '<');
+    }
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "<" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
+    ret.m_status = JianziStatus::Renderable;
     ret.m_node->first = std::make_unique<Node>(*m_node);
     ret.m_node->second = std::make_unique<Node>(*right.m_node);
     auto& left_node = *ret.m_node->first;
@@ -804,9 +848,13 @@ Jianzi Jianzi::operator<(const Jianzi& right) const {
 
 Jianzi Jianzi::operator/(const Jianzi& below) const {
     CheckContext(below);
+    if (m_status != JianziStatus::Renderable || below.m_status != JianziStatus::Renderable) {
+        return MakeMissingCombination(below, '/');
+    }
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "/" + below.m_name + ")";
     ret.m_node = std::make_unique<Node>();
+    ret.m_status = JianziStatus::Renderable;
     ret.m_node->first = std::make_unique<Node>(*m_node);
     ret.m_node->second = std::make_unique<Node>(*below.m_node);
     auto& above_node = *ret.m_node->first;
@@ -882,6 +930,9 @@ Jianzi Jianzi::operator/(const Jianzi& below) const {
 
 Jianzi Jianzi::operator^(const Jianzi& below) const {
     CheckContext(below);
+    if (m_status != JianziStatus::Renderable || below.m_status != JianziStatus::Renderable) {
+        return MakeMissingCombination(below, '^');
+    }
     Jianzi above = *this;
     if (above.m_v_segments > 0 && below.m_v_segments > 0 && above.m_v_segments > below.m_v_segments) {
         above.m_v_segments = below.m_v_segments;
@@ -896,10 +947,14 @@ Jianzi Jianzi::operator^(const Jianzi& below) const {
 
 Jianzi Jianzi::operator*(const Jianzi& content) const {
     CheckContext(content);
+    if (m_status != JianziStatus::Renderable || content.m_status != JianziStatus::Renderable) {
+        return MakeMissingCombination(content, '*');
+    }
     if (!m_capsule) return *this / content;
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "*" + content.m_name + ")";
     ret.m_node = std::make_unique<Node>();
+    ret.m_status = JianziStatus::Renderable;
     ret.m_node->first = std::make_unique<Node>(*m_node);
     ret.m_node->second = std::make_unique<Node>(*content.m_node);
     auto& base = *ret.m_node->first;
@@ -997,6 +1052,14 @@ std::vector<PathData> qin::Jianzi::RenderPath() const {
 }
 
 const char* Jianzi::GetName() const { return m_name.c_str(); }
+
+JianziStatus Jianzi::GetStatus() const noexcept { return m_status; }
+
+std::string_view Jianzi::GetFallbackName() const noexcept {
+    return m_status == JianziStatus::Fallback ? std::string_view(m_name) : std::string_view{};
+}
+
+const std::vector<std::string>& Jianzi::GetMissingNames() const noexcept { return m_missing_names; }
 
 Jianzi::BorderFlags Jianzi::GetBorderFlags() const { return m_border_flags; }
 

@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "Jianzi.hpp"
 
 namespace {
@@ -37,6 +39,12 @@ int main(int argc, char** argv) {
   }
   auto firstLibrary = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
   auto secondLibrary = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
+  auto fallbackDocument = nlohmann::json::from_cbor(libraryBytes);
+  if (!fallbackDocument.contains("aliases")) fallbackDocument["aliases"] = nlohmann::json::array();
+  fallbackDocument["aliases"].push_back(
+      {{"alias", "fallback-test-alias"}, {"glyph", u8"😀"}, {"type", "Other"}});
+  const auto fallbackBytes = nlohmann::json::to_cbor(fallbackDocument);
+  auto fallbackLibrary = qin::JianziLibrary::Load(fallbackBytes.data(), fallbackBytes.size());
   libraryBytes.clear();
   libraryBytes.shrink_to_fit();
 
@@ -54,6 +62,53 @@ int main(int argc, char** argv) {
   const auto secondFormula = secondLibrary.ParseNatural(argv[2]);
   auto first = firstLibrary.Parse(firstFormula.c_str());
   auto second = secondLibrary.Parse(secondFormula.c_str());
+
+  if (first.GetStatus() != qin::JianziStatus::Renderable ||
+      second.GetStatus() != qin::JianziStatus::Renderable) {
+    std::cerr << "A known formula was not marked renderable.\n";
+    return 1;
+  }
+
+  constexpr auto fallbackName = u8"😀";
+  const auto fallbackFormula = firstLibrary.ParseNatural(fallbackName);
+  const auto fallback = firstLibrary.Parse(fallbackFormula.c_str());
+  if (fallbackFormula != fallbackName || fallback.GetStatus() != qin::JianziStatus::Fallback ||
+      fallback.GetFallbackName() != fallbackName || !fallback.GetMissingNames().empty() ||
+      !fallback.RenderPath().empty()) {
+    std::cerr << "A single unknown character did not produce a fallback result.\n";
+    return 1;
+  }
+
+  const auto aliasFallback = fallbackLibrary.Parse("fallback-test-alias");
+  if (aliasFallback.GetStatus() != qin::JianziStatus::Fallback ||
+      aliasFallback.GetFallbackName() != fallbackName) {
+    std::cerr << "An alias targeting an unknown character did not preserve the fallback target.\n";
+    return 1;
+  }
+
+  const auto missing = firstLibrary.Parse(("(" + firstFormula + ")/" + fallbackName).c_str());
+  if (missing.GetStatus() != qin::JianziStatus::Missing || missing.GetMissingNames().size() != 1 ||
+      missing.GetMissingNames().front() != fallbackName || !missing.GetFallbackName().empty() ||
+      !missing.RenderPath().empty()) {
+    std::cerr << "An unknown character in a composition did not produce a missing result.\n";
+    return 1;
+  }
+
+  if (firstLibrary.Parse(" ").GetStatus() != qin::JianziStatus::Empty) {
+    std::cerr << "An empty formula was not marked empty.\n";
+    return 1;
+  }
+
+  bool invalidFormulaRejected = false;
+  try {
+    static_cast<void>(firstLibrary.Parse(u8"😀/"));
+  } catch (const std::invalid_argument&) {
+    invalidFormulaRejected = true;
+  }
+  if (!invalidFormulaRejected) {
+    std::cerr << "An invalid formula was not rejected.\n";
+    return 1;
+  }
 
   const auto firstPaths = first.RenderPath();
   if (firstPaths.empty() || second.RenderPath().empty()) {
