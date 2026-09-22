@@ -38,9 +38,13 @@ link_directories(
 )
 
 add_subdirectory(JianziNote)
-add_subdirectory(Jianzi2LaTeX)
-add_subdirectory(Jianzi2Lilypond)
-add_subdirectory(Jianzi2Svg)
+
+option(JIANZINOTE_BUILD_TOOLS "Build the JianziNote command-line tools" ON)
+if(JIANZINOTE_BUILD_TOOLS)
+    add_subdirectory(Jianzi2LaTeX)
+    add_subdirectory(Jianzi2Lilypond)
+    add_subdirectory(Jianzi2Svg)
+endif()
 
 if(BUILD_TESTING)
     add_executable(stroke-desc-runtime-test tests/StrokeDescRuntimeTest.cpp)

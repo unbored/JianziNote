@@ -204,6 +204,8 @@ auto result = renderer.Render(path_data);
 
 默认会构建独立的`JianziFontReader`目标。若只需要不含文件系统与字体依赖的核心库，可设置`JIANZINOTE_BUILD_FONT_READER=OFF`；使用vcpkg清单模式时也可关闭默认的`font-reader`特性。
 
+三个命令行工具默认启用。将本项目作为子项目使用时，可设置`JIANZINOTE_BUILD_TOOLS=OFF`，只构建库目标。
+
 ### 兼容性
 
 编译器要求支持C++17。
