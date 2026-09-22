@@ -4,6 +4,19 @@
 
 #include "Jianzi.hpp"
 
+namespace {
+bool SamePaths(const std::vector<qin::PathData>& left, const std::vector<qin::PathData>& right) {
+  if (left.size() != right.size()) return false;
+  for (std::size_t i = 0; i < left.size(); ++i) {
+    if (left[i].key != right[i].key || left[i].pts.size() != right[i].pts.size()) return false;
+    for (std::size_t j = 0; j < left[i].pts.size(); ++j) {
+      if (left[i].pts[j].x != right[i].pts[j].x || left[i].pts[j].y != right[i].pts[j].y) return false;
+    }
+  }
+  return true;
+}
+}  // namespace
+
 int main(int argc, char** argv) {
   if (argc != 3) {
     std::cerr << "Usage: jianzi-instance-test <library.cbor> <text>\n";
@@ -18,15 +31,22 @@ int main(int argc, char** argv) {
   auto first = firstLibrary.Parse(firstFormula.c_str());
   auto second = secondLibrary.Parse(secondFormula.c_str());
 
-  if (first.RenderPath().empty() || second.RenderPath().empty()) {
+  const auto firstPaths = first.RenderPath();
+  if (firstPaths.empty() || second.RenderPath().empty()) {
     std::cerr << "An independently loaded library failed to render.\n";
+    return 1;
+  }
+
+  const auto copied = first;
+  if (!SamePaths(firstPaths, copied.RenderPath())) {
+    std::cerr << "Copy construction changed the rendered tree.\n";
     return 1;
   }
 
   auto assigned = firstLibrary.Parse(firstFormula.c_str());
   assigned = first;
-  if (assigned.RenderPath().empty()) {
-    std::cerr << "Same-library assignment failed.\n";
+  if (!SamePaths(firstPaths, assigned.RenderPath())) {
+    std::cerr << "Copy assignment changed the rendered tree.\n";
     return 1;
   }
 
@@ -39,6 +59,17 @@ int main(int argc, char** argv) {
   }
   if (!rejected) {
     std::cerr << "Cross-library composition was not rejected.\n";
+    return 1;
+  }
+
+  rejected = false;
+  try {
+    assigned = second;
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  if (!rejected) {
+    std::cerr << "Cross-library assignment was not rejected.\n";
     return 1;
   }
 

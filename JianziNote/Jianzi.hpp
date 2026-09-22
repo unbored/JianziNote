@@ -80,8 +80,29 @@ class Jianzi {
   std::string m_name;  // 减字名称
   JianziType m_type = JianziType::Other;
 
+  // 归一化方向
+  enum class NormalizeDirection {
+    Top = 8,
+    Bottom = 4,
+    Left = 2,
+    Right = 1,
+  };
+
+  struct FixedInsets {
+    float t = 0;
+    float b = 0;
+    float l = 0;
+    float r = 0;
+  };
+
   // 每个最小减字的包围框
   struct Node {
+    Node() = default;
+    Node(const Node &other);
+    Node &operator=(const Node &other);
+    Node(Node &&other) noexcept = default;
+    Node &operator=(Node &&other) noexcept = default;
+
     BoundingBox box;
     std::vector<Stroke> strokes;  // 包围框内的笔画
     struct {
@@ -95,7 +116,24 @@ class Jianzi {
     std::unique_ptr<Node> first;
     std::unique_ptr<Node> second;
 
-    static std::unique_ptr<Node> Clone(const Node &node);
+    float Area() const;
+    float RecordLayerRatio(float before_area);
+    void PlaceBody(bool horizontal, float start, float body_size,
+                   float fixed_start = 0, float fixed_end = 0);
+    float SkeletonVerticalCenter() const;
+    void PlaceZeroSegmentCenter(float target);
+    FixedInsets Normalize(NormalizeDirection dir, const Layout &layout);
+    void ApplyTransform(const BoundingBox &transform);
+    BoundingBox TightBoundingBox(const Layout &layout) const;
+    float MaximumStrokeWidth(const Layout &layout,
+                             float inherited_weight = 1.0f) const;
+    std::vector<Stroke> Flatten(const Layout &layout) const;
+
+   private:
+    float LayerWeight(const Layout &layout) const;
+    void CollectStrokes(const Layout &layout, const BoundingBox &parent_box,
+                        float inherited_weight,
+                        std::vector<Stroke> &output) const;
   };
 
   // std::vector<Stroke> m_strokes; // 减字所包含的所有端点
@@ -111,21 +149,6 @@ class Jianzi {
     int v_segments = 1;        // 填充区的纵向间隔数
   };
   std::unique_ptr<Capsule> m_capsule;  // 用于填充另一减字的空间，简称填充区
-
-  // 归一化方向
-  enum class NormalizeDirection {
-    Top = 8,
-    Bottom = 4,
-    Left = 2,
-    Right = 1,
-  };
-
-  struct FixedInsets {
-    float t = 0;
-    float b = 0;
-    float l = 0;
-    float r = 0;
-  };
 
   // 减字名称与类型
   struct JianziInfo {
@@ -145,20 +168,6 @@ class Jianzi {
 
   const JianziContext &m_context;
 
-  // 递归获取所有笔画
-  void CollectStrokes(const Node &node, const BoundingBox &parent_box,
-                      float inherited_weight, std::vector<Stroke> &strokes) const;
-  BoundingBox TightBoundingBox(const Node &node) const;
-  float LayerWeight(const Node &node) const;
-  float MaximumStrokeWidth(const Node &node, float inherited_weight = 1.0f) const;
-  static float NodeArea(const Node &node);
-  static float RecordLayerRatio(Node &node, float before_area);
-  static void PlaceBody(Node &node, bool horizontal, float start, float body_size,
-                        float fixed_start = 0, float fixed_end = 0);
-  static float SkeletonVerticalCenter(const Node &node);
-  static void PlaceZeroSegmentCenter(Node &node, float target);
-  FixedInsets Normalize(Node &node, NormalizeDirection dir) const;
-  static void NormalizeFunc(Node &node, const BoundingBox &box);
 };
 
 // 字库实例独占所有加载后的数据及渲染状态。由它生成的 Jianzi

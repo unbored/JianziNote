@@ -228,9 +228,8 @@ void Jianzi::CheckContext(const Jianzi& other) const {
 void Jianzi::CopyData(const Jianzi& other) {
     m_name = other.m_name;
     m_type = other.m_type;
-    // m_strokes = other.m_strokes;
     if (other.m_node) {
-        m_node = Node::Clone(*other.m_node);
+        m_node = std::make_unique<Node>(*other.m_node);
     } else {
         m_node.reset();
     }
@@ -694,14 +693,14 @@ Jianzi Jianzi::operator&(const Jianzi& right) const {
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "&" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
-    ret.m_node->first = Node::Clone(*m_node);
-    ret.m_node->second = Node::Clone(*right.m_node);
+    ret.m_node->first = std::make_unique<Node>(*m_node);
+    ret.m_node->second = std::make_unique<Node>(*right.m_node);
     auto& left_node = *ret.m_node->first;
     auto& right_node = *ret.m_node->second;
-    const auto before_left = NodeArea(left_node);
-    const auto before_right = NodeArea(right_node);
-    const auto fixed_left = Normalize(left_node, NormalizeDirection::Right);
-    const auto fixed_right = Normalize(right_node, NormalizeDirection::Left);
+    const auto before_left = left_node.Area();
+    const auto before_right = right_node.Area();
+    const auto fixed_left = left_node.Normalize(NormalizeDirection::Right, m_context.m_layout);
+    const auto fixed_right = right_node.Normalize(NormalizeDirection::Left, m_context.m_layout);
     const float gap = m_border_flags.r != right.m_border_flags.l
                           ? 0.5f
                           : (m_border_flags.r && right.m_border_flags.l ? 1.0f : 0.25f);
@@ -709,10 +708,10 @@ Jianzi Jianzi::operator&(const Jianzi& right) const {
     right_node.outer_border.l = gap;
     const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
     const auto left_body = available * 0.5f;
-    PlaceBody(left_node, true, 0, left_body, fixed_left.l, 0);
-    PlaceBody(right_node, true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
-    RecordLayerRatio(left_node, before_left);
-    RecordLayerRatio(right_node, before_right);
+    left_node.PlaceBody(true, 0, left_body, fixed_left.l, 0);
+    right_node.PlaceBody(true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
+    left_node.RecordLayerRatio(before_left);
+    right_node.RecordLayerRatio(before_right);
     ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
     ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
     ret.m_border_flags.l = m_border_flags.l;
@@ -727,22 +726,22 @@ Jianzi Jianzi::operator|(const Jianzi& right) const {
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "|" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
-    ret.m_node->first = Node::Clone(*m_node);
-    ret.m_node->second = Node::Clone(*right.m_node);
+    ret.m_node->first = std::make_unique<Node>(*m_node);
+    ret.m_node->second = std::make_unique<Node>(*right.m_node);
     auto& left_node = *ret.m_node->first;
     auto& right_node = *ret.m_node->second;
-    const auto before_left = NodeArea(left_node);
-    const auto before_right = NodeArea(right_node);
-    const auto fixed_left = Normalize(left_node, NormalizeDirection::Right);
-    const auto fixed_right = Normalize(right_node, NormalizeDirection::Left);
+    const auto before_left = left_node.Area();
+    const auto before_right = right_node.Area();
+    const auto fixed_left = left_node.Normalize(NormalizeDirection::Right, m_context.m_layout);
+    const auto fixed_right = right_node.Normalize(NormalizeDirection::Left, m_context.m_layout);
     left_node.outer_border.r = m_border_flags.r ? 2.0f : 1.0f;
     right_node.outer_border.l = right.m_border_flags.l ? 2.0f : 1.0f;
     const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
     const auto left_body = available * 0.5f;
-    PlaceBody(left_node, true, 0, left_body, fixed_left.l, 0);
-    PlaceBody(right_node, true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
-    RecordLayerRatio(left_node, before_left);
-    RecordLayerRatio(right_node, before_right);
+    left_node.PlaceBody(true, 0, left_body, fixed_left.l, 0);
+    right_node.PlaceBody(true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
+    left_node.RecordLayerRatio(before_left);
+    right_node.RecordLayerRatio(before_right);
     ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
     ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
     ret.m_border_flags.l = m_border_flags.l;
@@ -757,16 +756,16 @@ Jianzi Jianzi::operator<(const Jianzi& right) const {
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "<" + right.m_name + ")";
     ret.m_node = std::make_unique<Node>();
-    ret.m_node->first = Node::Clone(*m_node);
-    ret.m_node->second = Node::Clone(*right.m_node);
+    ret.m_node->first = std::make_unique<Node>(*m_node);
+    ret.m_node->second = std::make_unique<Node>(*right.m_node);
     auto& left_node = *ret.m_node->first;
     auto& right_node = *ret.m_node->second;
-    const auto before_left = NodeArea(left_node);
-    const auto before_right = NodeArea(right_node);
+    const auto before_left = left_node.Area();
+    const auto before_right = right_node.Area();
     const auto both = static_cast<NormalizeDirection>(static_cast<int>(NormalizeDirection::Left) |
                                                        static_cast<int>(NormalizeDirection::Right));
-    const auto fixed_left = Normalize(left_node, both);
-    const auto fixed_right = Normalize(right_node, NormalizeDirection::Left);
+    const auto fixed_left = left_node.Normalize(both, m_context.m_layout);
+    const auto fixed_right = right_node.Normalize(NormalizeDirection::Left, m_context.m_layout);
     const float gap = m_border_flags.r != right.m_border_flags.l
                           ? 0.5f
                           : (m_border_flags.r && right.m_border_flags.l ? 1.0f : 0.25f);
@@ -774,10 +773,10 @@ Jianzi Jianzi::operator<(const Jianzi& right) const {
     right_node.outer_border.l = gap;
     const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
     const auto left_body = available * 0.3f;
-    PlaceBody(left_node, true, 0, left_body, fixed_left.l, 0);
-    PlaceBody(right_node, true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
-    RecordLayerRatio(left_node, before_left);
-    RecordLayerRatio(right_node, before_right);
+    left_node.PlaceBody(true, 0, left_body, fixed_left.l, 0);
+    right_node.PlaceBody(true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
+    left_node.RecordLayerRatio(before_left);
+    right_node.RecordLayerRatio(before_right);
     ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
     ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
     ret.m_border_flags.l = m_border_flags.l;
@@ -792,12 +791,12 @@ Jianzi Jianzi::operator/(const Jianzi& below) const {
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "/" + below.m_name + ")";
     ret.m_node = std::make_unique<Node>();
-    ret.m_node->first = Node::Clone(*m_node);
-    ret.m_node->second = Node::Clone(*below.m_node);
+    ret.m_node->first = std::make_unique<Node>(*m_node);
+    ret.m_node->second = std::make_unique<Node>(*below.m_node);
     auto& above_node = *ret.m_node->first;
     auto& below_node = *ret.m_node->second;
-    const auto before_above = NodeArea(above_node);
-    const auto before_below = NodeArea(below_node);
+    const auto before_above = above_node.Area();
+    const auto before_below = below_node.Area();
     const bool above_participates = m_v_segments > 0;
     const bool below_participates = below.m_v_segments > 0;
     int extra = 0;
@@ -810,47 +809,49 @@ Jianzi Jianzi::operator/(const Jianzi& below) const {
     }
     const int total = m_v_segments + below.m_v_segments + extra;
     if (!above_participates && below_participates) {
-        const auto stroke_height = std::min(1.0f, 2.0f * MaximumStrokeWidth(above_node));
+        const auto stroke_height =
+            std::min(1.0f, 2.0f * above_node.MaximumStrokeWidth(m_context.m_layout));
         const auto edge_height =
             std::min(m_context.m_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
         const auto zero_height = stroke_height + edge_height;
-        const auto fixed_below = Normalize(below_node, NormalizeDirection::Top);
+        const auto fixed_below = below_node.Normalize(NormalizeDirection::Top, m_context.m_layout);
         const auto available = std::max(0.0f, 1.0f - zero_height - fixed_below.b);
         const auto unit = available / static_cast<float>(below.m_v_segments + extra);
-        PlaceBody(below_node, false, zero_height + unit * extra, unit * below.m_v_segments, 0, fixed_below.b);
-        PlaceZeroSegmentCenter(above_node, edge_height + stroke_height * 0.5f);
-        const auto ratio = RecordLayerRatio(below_node, before_below);
+        below_node.PlaceBody(false, zero_height + unit * extra, unit * below.m_v_segments, 0, fixed_below.b);
+        above_node.PlaceZeroSegmentCenter(edge_height + stroke_height * 0.5f);
+        const auto ratio = below_node.RecordLayerRatio(before_below);
         above_node.layer_ratios.push_back(ratio);
     } else if (above_participates && !below_participates) {
-        const auto stroke_height = std::min(1.0f, 2.0f * MaximumStrokeWidth(below_node));
+        const auto stroke_height =
+            std::min(1.0f, 2.0f * below_node.MaximumStrokeWidth(m_context.m_layout));
         const auto edge_height =
             std::min(m_context.m_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
         const auto zero_height = stroke_height + edge_height;
-        const auto fixed_above = Normalize(above_node, NormalizeDirection::Bottom);
+        const auto fixed_above = above_node.Normalize(NormalizeDirection::Bottom, m_context.m_layout);
         const auto available = std::max(0.0f, 1.0f - zero_height - fixed_above.t);
         const auto unit = available / static_cast<float>(m_v_segments + extra);
-        PlaceBody(above_node, false, 0, unit * m_v_segments, fixed_above.t, 0);
-        PlaceZeroSegmentCenter(below_node, 1.0f - edge_height - stroke_height * 0.5f);
-        const auto ratio = RecordLayerRatio(above_node, before_above);
+        above_node.PlaceBody(false, 0, unit * m_v_segments, fixed_above.t, 0);
+        below_node.PlaceZeroSegmentCenter(1.0f - edge_height - stroke_height * 0.5f);
+        const auto ratio = above_node.RecordLayerRatio(before_above);
         below_node.layer_ratios.push_back(ratio);
     } else if (above_participates && below_participates) {
-        const auto fixed_above = Normalize(above_node, NormalizeDirection::Bottom);
-        const auto fixed_below = Normalize(below_node, NormalizeDirection::Top);
+        const auto fixed_above = above_node.Normalize(NormalizeDirection::Bottom, m_context.m_layout);
+        const auto fixed_below = below_node.Normalize(NormalizeDirection::Top, m_context.m_layout);
         const auto available = std::max(0.0f, 1.0f - fixed_above.t - fixed_below.b);
         const auto unit = available / static_cast<float>(total);
-        PlaceBody(above_node, false, 0, unit * m_v_segments, fixed_above.t, 0);
-        PlaceBody(below_node, false, fixed_above.t + unit * (m_v_segments + extra),
-                  unit * below.m_v_segments, 0, fixed_below.b);
-        RecordLayerRatio(above_node, before_above);
-        RecordLayerRatio(below_node, before_below);
+        above_node.PlaceBody(false, 0, unit * m_v_segments, fixed_above.t, 0);
+        below_node.PlaceBody(false, fixed_above.t + unit * (m_v_segments + extra),
+                             unit * below.m_v_segments, 0, fixed_below.b);
+        above_node.RecordLayerRatio(before_above);
+        below_node.RecordLayerRatio(before_below);
     } else if (total > 0) {
-        PlaceZeroSegmentCenter(above_node, 0);
-        PlaceZeroSegmentCenter(below_node, 1);
-        RecordLayerRatio(above_node, before_above);
-        RecordLayerRatio(below_node, before_below);
+        above_node.PlaceZeroSegmentCenter(0);
+        below_node.PlaceZeroSegmentCenter(1);
+        above_node.RecordLayerRatio(before_above);
+        below_node.RecordLayerRatio(before_below);
     } else {
-        RecordLayerRatio(above_node, before_above);
-        RecordLayerRatio(below_node, before_below);
+        above_node.RecordLayerRatio(before_above);
+        below_node.RecordLayerRatio(before_below);
     }
     above_node.outer_border.b = gap;
     below_node.outer_border.t = gap;
@@ -883,12 +884,12 @@ Jianzi Jianzi::operator*(const Jianzi& content) const {
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "*" + content.m_name + ")";
     ret.m_node = std::make_unique<Node>();
-    ret.m_node->first = Node::Clone(*m_node);
-    ret.m_node->second = Node::Clone(*content.m_node);
+    ret.m_node->first = std::make_unique<Node>(*m_node);
+    ret.m_node->second = std::make_unique<Node>(*content.m_node);
     auto& base = *ret.m_node->first;
     auto& inside = *ret.m_node->second;
-    const auto before_base = NodeArea(base);
-    const auto before_inside = NodeArea(inside);
+    const auto before_base = base.Area();
+    const auto before_inside = inside.Area();
     const bool zero_content = content.m_v_segments == 0;
     const bool top_conflict = m_capsule->border_flags.t && content.m_border_flags.t;
     const bool bottom_conflict = m_capsule->border_flags.b && content.m_border_flags.b;
@@ -902,7 +903,7 @@ Jianzi Jianzi::operator*(const Jianzi& content) const {
 
     const auto old_tl = m_capsule->tl;
     const auto old_br = m_capsule->br;
-    auto host_box = TightBoundingBox(base);
+    auto host_box = base.TightBoundingBox(m_context.m_layout);
     const float outer_top = std::min(old_tl.y, host_box.y);
     const float outer_bottom = std::max(old_br.y, host_box.y + host_box.h);
     const float envelope = outer_bottom - outer_top;
@@ -936,22 +937,24 @@ Jianzi Jianzi::operator*(const Jianzi& content) const {
     if (bottom_conflict && !zero_content) br.y -= segment_height;
     if (br.y < tl.y) throw std::runtime_error("Capsule has no vertical space after border avoidance.");
 
-    if (!zero_content && (m_capsule->border_flags.t || tl.y > 0)) Normalize(inside, NormalizeDirection::Top);
-    if (!zero_content && (m_capsule->border_flags.b || br.y < 1)) Normalize(inside, NormalizeDirection::Bottom);
-    if (m_capsule->border_flags.l || tl.x > 0) Normalize(inside, NormalizeDirection::Left);
-    if (m_capsule->border_flags.r || br.x < 1) Normalize(inside, NormalizeDirection::Right);
+    if (!zero_content && (m_capsule->border_flags.t || tl.y > 0))
+        inside.Normalize(NormalizeDirection::Top, m_context.m_layout);
+    if (!zero_content && (m_capsule->border_flags.b || br.y < 1))
+        inside.Normalize(NormalizeDirection::Bottom, m_context.m_layout);
+    if (m_capsule->border_flags.l || tl.x > 0) inside.Normalize(NormalizeDirection::Left, m_context.m_layout);
+    if (m_capsule->border_flags.r || br.x < 1) inside.Normalize(NormalizeDirection::Right, m_context.m_layout);
     inside.outer_border.t = zero_content ? 0 : (m_capsule->border_flags.t ? (content.m_border_flags.t ? 0 : 1) : 0);
     inside.outer_border.b = zero_content ? 0 : (m_capsule->border_flags.b ? (content.m_border_flags.b ? 0 : 1) : 0);
     inside.outer_border.l = m_capsule->border_flags.l ? (content.m_border_flags.l ? 2 : 1) : 0;
     inside.outer_border.r = m_capsule->border_flags.r ? (content.m_border_flags.r ? 2 : 1) : 0;
     if (zero_content) {
         inside.box = {tl.x, 0, br.x - tl.x, 1};
-        PlaceZeroSegmentCenter(inside, (tl.y + br.y) * 0.5f);
+        inside.PlaceZeroSegmentCenter((tl.y + br.y) * 0.5f);
     } else {
         inside.box = {tl.x, tl.y, br.x - tl.x, br.y - tl.y};
     }
-    RecordLayerRatio(base, before_base);
-    RecordLayerRatio(inside, before_inside);
+    base.RecordLayerRatio(before_base);
+    inside.RecordLayerRatio(before_inside);
 
     ret.m_border_flags = m_border_flags;
     if (tl.x == 0) ret.m_border_flags.l |= content.m_border_flags.l;
@@ -964,8 +967,7 @@ Jianzi Jianzi::operator*(const Jianzi& content) const {
 
 std::vector<PathData> qin::Jianzi::RenderPath() const {
     if (!m_node) return {};
-    std::vector<Stroke> strokes;
-    CollectStrokes(*m_node, BoundingBox{}, 1.0f, strokes);
+    auto strokes = m_node->Flatten(m_context.m_layout);
     auto paths = m_context.m_renderer->Render(strokes);
     for (auto& command : paths) {
         for (auto& point : command.pts) {
@@ -984,15 +986,36 @@ Jianzi::BorderFlags Jianzi::GetBorderFlags() const { return m_border_flags; }
 
 int Jianzi::GetSegments() const { return m_v_segments; }
 
-BoundingBox Jianzi::TightBoundingBox(const Node& node) const {
-    std::vector<Stroke> strokes;
-    CollectStrokes(node, BoundingBox(), 1.0f, strokes);
+Jianzi::Node::Node(const Node& other)
+    : box(other.box),
+      strokes(other.strokes),
+      outer_border(other.outer_border),
+      layer_ratios(other.layer_ratios) {
+    if (other.first) first = std::make_unique<Node>(*other.first);
+    if (other.second) second = std::make_unique<Node>(*other.second);
+}
+
+Jianzi::Node& Jianzi::Node::operator=(const Node& other) {
+    if (this == &other) return *this;
+    Node copy(other);
+    *this = std::move(copy);
+    return *this;
+}
+
+std::vector<Stroke> Jianzi::Node::Flatten(const Layout& layout) const {
+    std::vector<Stroke> result;
+    CollectStrokes(layout, BoundingBox{}, 1.0f, result);
+    return result;
+}
+
+BoundingBox Jianzi::Node::TightBoundingBox(const Layout& layout) const {
+    auto flattened = Flatten(layout);
 
     // 获取坐标最大最小值
     float x_min = std::numeric_limits<float>::max(), x_max = std::numeric_limits<float>::lowest();
     float y_min = std::numeric_limits<float>::max(), y_max = std::numeric_limits<float>::lowest();
     bool has_point = false;
-    for (auto& s : strokes) {
+    for (const auto& s : flattened) {
         for (auto& v : s.vertice) {
             has_point = true;
             if (v.pt.x < x_min) {
@@ -1022,47 +1045,46 @@ BoundingBox Jianzi::TightBoundingBox(const Node& node) const {
     return box;
 }
 
-float Jianzi::LayerWeight(const Node& node) const {
+float Jianzi::Node::LayerWeight(const Layout& layout) const {
     float result = 1.0f;
-    for (const auto ratio : node.layer_ratios) {
-        result *= m_context.m_layout.weight_area * std::sqrt(std::max(0.0f, ratio)) +
-                  m_context.m_layout.weight_base;
+    for (const auto ratio : layer_ratios) {
+        result *= layout.weight_area * std::sqrt(std::max(0.0f, ratio)) + layout.weight_base;
     }
     return result;
 }
 
-float Jianzi::MaximumStrokeWidth(const Node& node, float inherited_weight) const {
-    const auto weight = inherited_weight * LayerWeight(node);
+float Jianzi::Node::MaximumStrokeWidth(const Layout& layout, float inherited_weight) const {
+    const auto weight = inherited_weight * LayerWeight(layout);
     float result = 0;
-    for (const auto& stroke : node.strokes) result = std::max(result, stroke.width * weight);
-    if (node.first) result = std::max(result, MaximumStrokeWidth(*node.first, weight));
-    if (node.second) result = std::max(result, MaximumStrokeWidth(*node.second, weight));
+    for (const auto& stroke : strokes) result = std::max(result, stroke.width * weight);
+    if (first) result = std::max(result, first->MaximumStrokeWidth(layout, weight));
+    if (second) result = std::max(result, second->MaximumStrokeWidth(layout, weight));
     return result;
 }
 
-float Jianzi::NodeArea(const Node& node) { return std::abs(node.box.w * node.box.h); }
+float Jianzi::Node::Area() const { return std::abs(box.w * box.h); }
 
-float Jianzi::RecordLayerRatio(Node& node, float before_area) {
-    const auto ratio = before_area > 1e-12f ? NodeArea(node) / before_area : 1.0f;
-    node.layer_ratios.push_back(std::isfinite(ratio) && ratio >= 0 ? ratio : 1.0f);
-    return node.layer_ratios.back();
+float Jianzi::Node::RecordLayerRatio(float before_area) {
+    const auto ratio = before_area > 1e-12f ? Area() / before_area : 1.0f;
+    layer_ratios.push_back(std::isfinite(ratio) && ratio >= 0 ? ratio : 1.0f);
+    return layer_ratios.back();
 }
 
-void Jianzi::PlaceBody(Node& node, bool horizontal, float start, float body_size, float fixed_start,
-                       float fixed_end) {
+void Jianzi::Node::PlaceBody(bool horizontal, float start, float body_size, float fixed_start,
+                             float fixed_end) {
     const auto source_body = std::max(1e-9f, 1.0f - fixed_start - fixed_end);
     const auto scale = std::max(0.0f, body_size) / source_body;
     const auto offset = start + fixed_start - scale * fixed_start;
     if (horizontal) {
-        node.box.x = offset + scale * node.box.x;
-        node.box.w *= scale;
+        box.x = offset + scale * box.x;
+        box.w *= scale;
     } else {
-        node.box.y = offset + scale * node.box.y;
-        node.box.h *= scale;
+        box.y = offset + scale * box.y;
+        box.h *= scale;
     }
 }
 
-float Jianzi::SkeletonVerticalCenter(const Node& node) {
+float Jianzi::Node::SkeletonVerticalCenter() const {
     float minimum = std::numeric_limits<float>::max();
     float maximum = std::numeric_limits<float>::lowest();
     std::function<void(const Node&, const BoundingBox&)> collect = [&](const Node& current,
@@ -1078,36 +1100,36 @@ float Jianzi::SkeletonVerticalCenter(const Node& node) {
         if (current.first) collect(*current.first, box);
         if (current.second) collect(*current.second, box);
     };
-    collect(node, BoundingBox{});
+    collect(*this, BoundingBox{});
     return minimum <= maximum ? (minimum + maximum) * 0.5f : 0.5f;
 }
 
-void Jianzi::PlaceZeroSegmentCenter(Node& node, float target) {
-    node.box.y += target - SkeletonVerticalCenter(node);
+void Jianzi::Node::PlaceZeroSegmentCenter(float target) {
+    box.y += target - SkeletonVerticalCenter();
 }
 
-void Jianzi::CollectStrokes(const Node& node, const BoundingBox& parent_box, float inherited_weight,
-                            std::vector<Stroke>& strokes) const {
-    BoundingBox box = parent_box * node.box;
-    const auto weight = inherited_weight * LayerWeight(node);
-    box.x += node.outer_border.l * m_context.m_layout.border_width * weight;
-    box.y += node.outer_border.t * m_context.m_layout.border_width * weight;
-    box.w -= (node.outer_border.l + node.outer_border.r) * m_context.m_layout.border_width * weight;
-    box.h -= (node.outer_border.t + node.outer_border.b) * m_context.m_layout.border_width * weight;
-    for (auto& s : node.strokes) {
+void Jianzi::Node::CollectStrokes(const Layout& layout, const BoundingBox& parent_box,
+                                  float inherited_weight, std::vector<Stroke>& output) const {
+    BoundingBox transformed = parent_box * box;
+    const auto weight = inherited_weight * LayerWeight(layout);
+    transformed.x += outer_border.l * layout.border_width * weight;
+    transformed.y += outer_border.t * layout.border_width * weight;
+    transformed.w -= (outer_border.l + outer_border.r) * layout.border_width * weight;
+    transformed.h -= (outer_border.t + outer_border.b) * layout.border_width * weight;
+    for (const auto& s : strokes) {
         Stroke ns = s;
         ns.width *= weight;
         for (auto& v : ns.vertice) {
-            v.pt = box * v.pt;
+            v.pt = transformed * v.pt;
         }
-        strokes.push_back(ns);
+        output.push_back(std::move(ns));
     }
-    if (node.first) CollectStrokes(*node.first, box, weight, strokes);
-    if (node.second) CollectStrokes(*node.second, box, weight, strokes);
+    if (first) first->CollectStrokes(layout, transformed, weight, output);
+    if (second) second->CollectStrokes(layout, transformed, weight, output);
 }
 
-Jianzi::FixedInsets Jianzi::Normalize(Node& node, NormalizeDirection dir) const {
-    auto tight_box = TightBoundingBox(node);
+Jianzi::FixedInsets Jianzi::Node::Normalize(NormalizeDirection dir, const Layout& layout) {
+    auto tight_box = TightBoundingBox(layout);
     float xa = tight_box.x;
     float xb = tight_box.x + tight_box.w;
     float ya = tight_box.y;
@@ -1159,35 +1181,20 @@ Jianzi::FixedInsets Jianzi::Normalize(Node& node, NormalizeDirection dir) const 
         norm_box = norm_box * box;
     }
 
-    NormalizeFunc(node, norm_box);
+    ApplyTransform(norm_box);
     return fixed;
 }
 
-void Jianzi::NormalizeFunc(Node& node, const BoundingBox& box) {
-    for (auto& s : node.strokes) {
+void Jianzi::Node::ApplyTransform(const BoundingBox& transform) {
+    for (auto& s : strokes) {
         // 笔画缩放
         for (auto& v : s.vertice) {
-            v.pt = box * v.pt;
+            v.pt = transform * v.pt;
         }
     }
 
-    if (node.first) node.first->box = box * node.first->box;
-    if (node.second) node.second->box = box * node.second->box;
-}
-
-std::unique_ptr<Jianzi::Node> Jianzi::Node::Clone(const Jianzi::Node& node) {
-    std::unique_ptr<Node> ret = std::make_unique<Node>();
-    ret->box = node.box;
-    ret->strokes = node.strokes;
-    ret->outer_border = node.outer_border;
-    ret->layer_ratios = node.layer_ratios;
-    if (node.first) {
-        ret->first = Clone(*node.first);
-    }
-    if (node.second) {
-        ret->second = Clone(*node.second);
-    }
-    return std::move(ret);
+    if (first) first->box = transform * first->box;
+    if (second) second->box = transform * second->box;
 }
 
 }  // namespace qin

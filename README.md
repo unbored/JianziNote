@@ -179,11 +179,12 @@ std::string library_file = "library.cbor";
 // 减字
 std::string jianzi_str = "大九挑七";
 
-// 加载 StrokeDesc v2 减字库
-Jianzi::OpenLibrary(library_file.c_str());
+// 加载 StrokeDesc v2 减字库；library 必须比由它生成的 Jianzi 存活得更久
+auto library = JianziLibrary::LoadFile(library_file);
 
 // 将一个自然表述字串转化为算式，然后进行解析
-auto jianzi = Jianzi::Parse(Jianzi::ParseNatural(jianzi_str.c_str()).c_str());
+const auto formula = library.ParseNatural(jianzi_str.c_str());
+auto jianzi = library.Parse(formula.c_str());
 
 // 获得减字路径描述
 auto path_data = jianzi.RenderPath();
