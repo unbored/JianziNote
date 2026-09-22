@@ -11,7 +11,8 @@
 #include <vector>
 
 #include "BoundingBox.hpp"
-#include "JianziDefines.hpp"
+#include "Stroke.hpp"
+#include "VectorPath.hpp"
 
 namespace qin {
 class StrokeDescRenderer;
@@ -78,7 +79,6 @@ class Jianzi {
     float capsule_weight_base = 0.5f;
   };
   std::string m_name;  // 减字名称
-  JianziType m_type = JianziType::Other;
 
   // 归一化方向
   enum class NormalizeDirection {
@@ -149,12 +149,6 @@ class Jianzi {
     int v_segments = 1;        // 填充区的纵向间隔数
   };
   std::unique_ptr<Capsule> m_capsule;  // 用于填充另一减字的空间，简称填充区
-
-  // 减字名称与类型
-  struct JianziInfo {
-    std::string name;
-    JianziType type;
-  };
 
  private:
   friend class JianziLibrary;

@@ -6,7 +6,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "JianziDefines.hpp"
+#include "Stroke.hpp"
+#include "VectorPath.hpp"
 
 namespace qin {
 

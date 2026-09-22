@@ -6,7 +6,7 @@
 #ifndef TIKZRENDERER_HPP
 #define TIKZRENDERER_HPP
 
-#include <JianziDefines.hpp>
+#include <VectorPath.hpp>
 #include <string>
 
 namespace qin {

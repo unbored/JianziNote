@@ -28,6 +28,28 @@ namespace qin
 
 {
 
+namespace {
+
+enum class JianziType {
+    Other,
+    Left,
+    LeftAlone,
+    Number,
+    Main,
+    MainComplex,
+    MainShu,
+    GraceAbove,
+    GraceSide,
+    Side,
+};
+
+struct JianziInfo {
+    std::string name;
+    JianziType type = JianziType::Other;
+};
+
+}  // namespace
+
 struct Jianzi::LibraryData {
     struct Glyph {
         JianziType type = JianziType::Other;
@@ -45,8 +67,8 @@ struct JianziContext {
     Jianzi::LibraryData m_library;
     std::unique_ptr<StrokeDescRenderer> m_renderer;
     Jianzi::Layout m_layout;
-    std::vector<Jianzi::JianziInfo> m_aliasList;
-    std::vector<Jianzi::JianziInfo> m_jianziList;
+    std::vector<JianziInfo> m_aliasList;
+    std::vector<JianziInfo> m_jianziList;
 };
 
 namespace {
@@ -165,7 +187,7 @@ JianziLibrary JianziLibrary::LoadFile(const std::filesystem::path& file) {
             {name, magic_enum::enum_cast<JianziType>(alias.value("type", std::string{"Other"}))
                        .value_or(JianziType::Other)});
     }
-    const auto compare = [](const Jianzi::JianziInfo& a, const Jianzi::JianziInfo& b) {
+    const auto compare = [](const JianziInfo& a, const JianziInfo& b) {
         tiny_utf8::string an = a.name, bn = b.name;
         return an.length() != bn.length() ? an.length() > bn.length() : an > bn;
     };
@@ -193,7 +215,6 @@ Jianzi::Jianzi(const JianziContext& context, const char* name) : m_context(conte
     const auto& glyph = found->second;
     m_border_flags = glyph.border_flags;
     m_v_segments = glyph.vertical_segments;
-    m_type = glyph.type;
     if (glyph.capsule) m_capsule = std::make_unique<Capsule>(*glyph.capsule);
     m_node = std::make_unique<Node>();
     m_node->strokes = glyph.strokes;
@@ -227,7 +248,6 @@ void Jianzi::CheckContext(const Jianzi& other) const {
 
 void Jianzi::CopyData(const Jianzi& other) {
     m_name = other.m_name;
-    m_type = other.m_type;
     if (other.m_node) {
         m_node = std::make_unique<Node>(*other.m_node);
     } else {
@@ -245,7 +265,6 @@ void Jianzi::CopyData(const Jianzi& other) {
 
 void Jianzi::MoveData(Jianzi&& other) {
     m_name = std::move(other.m_name);
-    m_type = other.m_type;
     m_node = std::move(other.m_node);
     m_border_flags = other.m_border_flags;
     m_v_segments = other.m_v_segments;
@@ -447,9 +466,9 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
 
     // 检索标记
     std::vector<bool> input_marks(input_length, false);
-    std::vector<Jianzi::JianziInfo> info_list(input_length);
+    std::vector<JianziInfo> info_list(input_length);
 
-    auto MarkInput = [&input, &input_marks, &info_list](const std::vector<Jianzi::JianziInfo>& input_list) {
+    auto MarkInput = [&input, &input_marks, &info_list](const std::vector<JianziInfo>& input_list) {
         for (auto& info : input_list) {
             string info_name = info.name;
             size_t info_length = info_name.length();

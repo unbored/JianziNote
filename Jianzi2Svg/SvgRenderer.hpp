@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include <JianziDefines.hpp>
+#include <VectorPath.hpp>
 
 namespace qin {
 

@@ -158,7 +158,7 @@ StrokeDesc v2 字库由 JianziNote-Editor 采集、拟合和编辑；C++ 端只�
 
 ### 输出描述
 
-`JianziDefines.hpp`定义了输出的通用矢量描述方式，即以`MoveTo`、`LineTo`、`QuadTo`、`CubicTo`和`Close`为关键字的列表，以及对应的点坐标列表。此描述方式方便对接到Cairo、Skia、LaTeX、Lilypond等不同的应用当中。
+`VectorPath.hpp`定义了输出的通用矢量描述方式，即以`MoveTo`、`LineTo`、`QuadTo`、`CubicTo`和`Close`为关键字的列表，以及对应的点坐标列表。此描述方式方便对接到Cairo、Skia、LaTeX、Lilypond等不同的应用当中。骨架笔画数据则单独定义在`Stroke.hpp`中。
 
 具体实现示例见Jianzi2LaTeX和Jianzi2Lilypond等子项目。
 
