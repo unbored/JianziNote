@@ -8,9 +8,11 @@
 #include <string>
 #include <string_view>
 
+#include "Result.hpp"
+
 namespace qin::utf8 {
 
-std::u32string Decode(std::string_view input);
-std::string Encode(std::u32string_view input);
+Result<std::u32string> Decode(std::string_view input);
+Result<std::string> Encode(std::u32string_view input);
 
 }  // namespace qin::utf8

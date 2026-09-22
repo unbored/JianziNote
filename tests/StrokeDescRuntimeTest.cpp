@@ -35,17 +35,44 @@ int main() {
                                      {{"type", "L"}, {"x", 0}, {"y", 0}},
                                      {{"type", "Z"}}})})}}}}}}});
 
-  qin::StrokeDescRenderer renderer(descriptions);
+  auto renderer = qin::StrokeDescRenderer::Create(descriptions);
+  if (!renderer) {
+    std::cerr << renderer.GetError()->message << '\n';
+    return 1;
+  }
   qin::Stroke stroke;
   stroke.desc = "test-flipped-outline";
   stroke.width = 0.1f;
   stroke.vertice = {{{0, 0}, qin::VertexRegion::Top}, {{1, 0}, qin::VertexRegion::Top}};
-  const auto path = renderer.Render({stroke});
-  if (path.size() != 5 || path[0].key != qin::PathKey::MoveTo || path[4].key != qin::PathKey::Close ||
-      !Near(path[0].pts[0].x, 0) || !Near(path[0].pts[0].y, -0.05f) ||
-      !Near(path[2].pts[0].x, 1) || !Near(path[2].pts[0].y, 0.05f)) {
+  const auto path = (*renderer.GetValue())->Render({stroke});
+  if (!path) {
+    std::cerr << path.GetError()->message << '\n';
+    return 1;
+  }
+  const auto& commands = *path.GetValue();
+  if (commands.size() != 5 || commands[0].key != qin::PathKey::MoveTo ||
+      commands[4].key != qin::PathKey::Close || !Near(commands[0].pts[0].x, 0) ||
+      !Near(commands[0].pts[0].y, -0.05f) || !Near(commands[2].pts[0].x, 1) ||
+      !Near(commands[2].pts[0].y, 0.05f)) {
     std::cerr << "Unexpected StrokeDesc runtime outline\n";
     return 1;
+  }
+
+  auto invalid_descriptions = descriptions;
+  invalid_descriptions[0]["fit"]["model"]["weights"] = "invalid";
+  const auto invalid_renderer = qin::StrokeDescRenderer::Create(invalid_descriptions);
+  if (invalid_renderer ||
+      invalid_renderer.GetError()->code != qin::JianziErrorCode::InvalidStrokeDesc) {
+    std::cerr << "Invalid StrokeDesc input was not rejected\n";
+    return 2;
+  }
+
+  stroke.width = 0;
+  const auto invalid_geometry = (*renderer.GetValue())->Render({stroke});
+  if (invalid_geometry ||
+      invalid_geometry.GetError()->code != qin::JianziErrorCode::InvalidGeometry) {
+    std::cerr << "Invalid stroke geometry was not rejected\n";
+    return 3;
   }
   return 0;
 }

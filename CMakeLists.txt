@@ -13,9 +13,20 @@ include(CTest)
 
 # vs需要配置unicode以正确处理汉字
 if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  # CMake's MSVC defaults contain /EHsc. Remove it in this directory scope
+  # before the transitive no-exceptions target adds /EHs-c-.
+  string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
   add_definitions(-DUNICODE -D_UNICODE)
   add_compile_options("/utf-8")
-  add_compile_options("/utf-8")
+endif()
+
+add_library(JianziNoExceptions INTERFACE)
+target_compile_definitions(JianziNoExceptions INTERFACE JSON_NOEXCEPTION)
+if(MSVC)
+    target_compile_definitions(JianziNoExceptions INTERFACE _HAS_EXCEPTIONS=0)
+    target_compile_options(JianziNoExceptions INTERFACE /EHs-c-)
+else()
+    target_compile_options(JianziNoExceptions INTERFACE -fno-exceptions)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
@@ -47,6 +58,11 @@ if(JIANZINOTE_BUILD_TOOLS)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(result-test tests/ResultTest.cpp)
+    target_include_directories(result-test PRIVATE ${PROJECT_SOURCE_DIR}/JianziNote)
+    target_link_libraries(result-test PRIVATE JianziNoExceptions)
+    add_test(NAME result COMMAND result-test)
+
     add_executable(stroke-desc-runtime-test tests/StrokeDescRuntimeTest.cpp)
     target_link_libraries(stroke-desc-runtime-test PRIVATE JianziNote)
     target_include_directories(stroke-desc-runtime-test PRIVATE ${PROJECT_SOURCE_DIR}/JianziNote)

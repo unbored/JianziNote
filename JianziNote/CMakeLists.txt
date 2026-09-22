@@ -20,6 +20,7 @@ add_library(${MODULE_NAME} ${PROJECT_LINK_DYNAMIC_STATIC}
     Utf8.cpp
 )
 target_include_directories(${MODULE_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(${MODULE_NAME} PUBLIC JianziNoExceptions)
 target_link_libraries(${MODULE_NAME} PUBLIC nlohmann_json::nlohmann_json)
 target_link_libraries(${MODULE_NAME} PRIVATE utf8cpp::utf8cpp)
 

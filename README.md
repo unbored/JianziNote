@@ -179,15 +179,27 @@ std::string library_file = "library.cbor";
 // 减字
 std::string jianzi_str = "大九挑七";
 
-// 从内存加载 StrokeDesc v2 减字库；library 必须比由它生成的 Jianzi 存活得更久
-auto library = JianziLibrary::Load(library_data.data(), library_data.size());
+// 从内存加载 StrokeDesc v2 减字库
+auto library_result = JianziLibrary::Load(library_data.data(), library_data.size());
+if (!library_result) {
+    // 可读取 library_result.GetError()->code/message
+    return;
+}
+auto library = std::move(*library_result.GetValue());
 
 // 排版指标与 RenderPath() 的输出使用相同的设计单位坐标系
 const auto metrics = library.GetLayoutMetrics();
 
 // 将一个自然表述字串转化为算式，然后进行解析
-const auto formula = library.ParseNatural(jianzi_str.c_str());
-auto jianzi = library.Parse(formula.c_str());
+auto formula_result = library.ParseNatural(jianzi_str.c_str());
+if (!formula_result) {
+    return;
+}
+auto jianzi_result = library.Parse(formula_result.GetValue()->c_str());
+if (!jianzi_result) {
+    return;
+}
+auto jianzi = std::move(*jianzi_result.GetValue());
 
 // 缺少单个字时可交给外部字体 fallback；组合公式缺字时可列出缺失项
 if (jianzi.GetStatus() == JianziStatus::Fallback) {
@@ -197,12 +209,17 @@ if (jianzi.GetStatus() == JianziStatus::Fallback) {
 }
 
 // 获得减字路径描述
-auto path_data = jianzi.RenderPath();
+auto path_result = jianzi.RenderPath();
+if (!path_result) {
+    return;
+}
 
 // 进行路径绘制
 SomeRenderer renderer;
-auto result = renderer.Render(path_data);
+auto result = renderer.Render(*path_result.GetValue());
 ```
+
+加载、解析、组合运算和路径生成均以`Result<T>`报告可恢复错误，不使用C++异常。`Result<T>`为真时可通过`GetValue()`取得值，为假时可通过`GetError()`取得错误码和说明。`Jianzi`借用其来源库的内部上下文，因此`JianziLibrary`必须比由它生成的所有减字存活得更久；来自不同库实例的减字不能组合。
 
 ## 编译
 
@@ -215,6 +232,8 @@ auto result = renderer.Render(path_data);
 默认会构建独立的`JianziFontReader`目标。若只需要不含文件系统与字体依赖的核心库，可设置`JIANZINOTE_BUILD_FONT_READER=OFF`；使用vcpkg清单模式时也可关闭默认的`font-reader`特性。
 
 三个命令行工具默认启用。将本项目作为子项目使用时，可设置`JIANZINOTE_BUILD_TOOLS=OFF`，只构建库目标。
+
+所有C++目标都关闭异常：GCC/Clang使用`-fno-exceptions`，MSVC使用`/EHs-c-`并关闭标准库异常路径。该设置通过`JianziNote`目标传递给链接它的调用方，以保证头文件中的`Result<T>`与依赖库配置一致。
 
 ### 兼容性
 

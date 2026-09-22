@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "BoundingBox.hpp"
+#include "Result.hpp"
 #include "Stroke.hpp"
 #include "VectorPath.hpp"
 
@@ -32,28 +33,28 @@ enum class JianziStatus {
 class Jianzi {
  public:
   Jianzi(const Jianzi &other);
-  Jianzi &operator=(const Jianzi &other);
+  Jianzi &operator=(const Jianzi &other) noexcept;
 
   Jianzi(Jianzi &&other) noexcept;
-  Jianzi &operator=(Jianzi &&other);
+  Jianzi &operator=(Jianzi &&other) noexcept;
 
   // 将两个减字横向合并，均分左右
-  Jianzi operator&(const Jianzi &right) const;
+  Result<Jianzi> operator&(const Jianzi &right) const;
   // 将两个减字横向合并，中间多留一个笔画宽度
   //（用于给“撮”“剌”等中间有一竖的减字留空间）
-  Jianzi operator|(const Jianzi &right) const;
+  Result<Jianzi> operator|(const Jianzi &right) const;
   // 将两个减字横向合并，但左侧只留30%
-  Jianzi operator<(const Jianzi &right) const;
+  Result<Jianzi> operator<(const Jianzi &right) const;
   // 将两个减字纵向合并
-  Jianzi operator/(const Jianzi &below) const;
+  Result<Jianzi> operator/(const Jianzi &below) const;
   // 将两个减字纵向合并，但限制上半部不超过一半
-  Jianzi operator^(const Jianzi &below) const;
+  Result<Jianzi> operator^(const Jianzi &below) const;
   // 对于普通减字，此运算与纵向合并相同
   // 对于带空间的减字，则是将指定减字放入填充空间内
-  Jianzi operator*(const Jianzi &content) const;
+  Result<Jianzi> operator*(const Jianzi &content) const;
 
   // 使用字形包内置的样式渲染。
-  std::vector<PathData> RenderPath() const;
+  Result<std::vector<PathData>> RenderPath() const;
 
   // 边界避让标记
   struct BorderFlags {
@@ -171,7 +172,7 @@ class Jianzi {
 
   explicit Jianzi(const JianziContext &context);
   Jianzi(const JianziContext &context, const char *u8_ch);
-  void CheckContext(const Jianzi &other) const;
+  bool HasSameContext(const Jianzi &other) const noexcept;
   Jianzi MakeMissingCombination(const Jianzi &other, char operation) const;
   void CopyData(const Jianzi &other);
   void MoveData(Jianzi &&other);
@@ -199,15 +200,15 @@ class JianziLibrary {
   JianziLibrary &operator=(JianziLibrary &&other) noexcept;
 
   // 从内存加载完整的 CBOR 字库。缓冲区只需在调用期间保持有效。
-  static JianziLibrary Load(const std::uint8_t *data, std::size_t size);
+  static Result<JianziLibrary> Load(const std::uint8_t *data, std::size_t size);
 
   // 获取字库排版指标，供外部排版系统缩放并对齐减字。
   LayoutMetrics GetLayoutMetrics() const;
 
   // 根据公式生成减字。
-  Jianzi Parse(const char *u8_str) const;
+  Result<Jianzi> Parse(const char *u8_str) const;
   // 根据自然字串生成公式。
-  std::string ParseNatural(const char *u8_str) const;
+  Result<std::string> ParseNatural(const char *u8_str) const;
 
  private:
   explicit JianziLibrary(std::unique_ptr<JianziContext> context);

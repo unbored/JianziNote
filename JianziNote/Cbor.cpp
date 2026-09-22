@@ -7,16 +7,18 @@
 
 namespace qin::cbor {
 
-ReadResult Read(const std::uint8_t* data, std::size_t size) {
+Result<nlohmann::json> Read(const std::uint8_t* data, std::size_t size) {
   if (data == nullptr || size == 0) {
-    return {{}, Error{"CBOR input is empty."}};
+    return Result<nlohmann::json>::Failure(
+        {JianziErrorCode::InvalidCbor, "CBOR input is empty."});
   }
 
-  try {
-    return {nlohmann::json::from_cbor(data, data + size), std::nullopt};
-  } catch (const std::exception& error) {
-    return {{}, Error{std::string("Invalid CBOR document: ") + error.what()}};
+  auto document = nlohmann::json::from_cbor(data, data + size, true, false);
+  if (document.is_discarded()) {
+    return Result<nlohmann::json>::Failure(
+        {JianziErrorCode::InvalidCbor, "Invalid CBOR document."});
   }
+  return Result<nlohmann::json>::Success(std::move(document));
 }
 
 }  // namespace qin::cbor

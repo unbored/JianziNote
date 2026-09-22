@@ -3,7 +3,6 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -37,14 +36,40 @@ int main(int argc, char** argv) {
     std::cerr << "Unable to read the library into memory.\n";
     return 1;
   }
-  auto firstLibrary = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
-  auto secondLibrary = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
-  auto fallbackDocument = nlohmann::json::from_cbor(libraryBytes);
+  auto firstLoaded = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
+  auto secondLoaded = qin::JianziLibrary::Load(libraryBytes.data(), libraryBytes.size());
+  if (!firstLoaded || !secondLoaded) {
+    std::cerr << "Unable to load the test library.\n";
+    return 1;
+  }
+  const std::uint8_t invalidCbor[] = {0xff};
+  const auto invalidCborResult = qin::JianziLibrary::Load(invalidCbor, sizeof(invalidCbor));
+  if (invalidCborResult ||
+      invalidCborResult.GetError()->code != qin::JianziErrorCode::InvalidCbor) {
+    std::cerr << "Invalid CBOR input was not rejected.\n";
+    return 1;
+  }
+  auto firstLibrary = std::move(*firstLoaded.GetValue());
+  auto secondLibrary = std::move(*secondLoaded.GetValue());
+  auto fallbackDocument = nlohmann::json::from_cbor(
+      libraryBytes.begin(), libraryBytes.end(), true, false);
+  if (fallbackDocument.is_discarded()) return 1;
+  auto invalidDocument = fallbackDocument;
+  invalidDocument["format_version"] = "invalid";
+  const auto invalidBytes = nlohmann::json::to_cbor(invalidDocument);
+  const auto invalidLibrary = qin::JianziLibrary::Load(invalidBytes.data(), invalidBytes.size());
+  if (invalidLibrary ||
+      invalidLibrary.GetError()->code != qin::JianziErrorCode::InvalidLibrary) {
+    std::cerr << "Invalid library schema was not rejected.\n";
+    return 1;
+  }
   if (!fallbackDocument.contains("aliases")) fallbackDocument["aliases"] = nlohmann::json::array();
   fallbackDocument["aliases"].push_back(
       {{"alias", "fallback-test-alias"}, {"glyph", u8"😀"}, {"type", "Other"}});
   const auto fallbackBytes = nlohmann::json::to_cbor(fallbackDocument);
-  auto fallbackLibrary = qin::JianziLibrary::Load(fallbackBytes.data(), fallbackBytes.size());
+  auto fallbackLoaded = qin::JianziLibrary::Load(fallbackBytes.data(), fallbackBytes.size());
+  if (!fallbackLoaded) return 1;
+  auto fallbackLibrary = std::move(*fallbackLoaded.GetValue());
   libraryBytes.clear();
   libraryBytes.shrink_to_fit();
 
@@ -60,8 +85,12 @@ int main(int argc, char** argv) {
 
   const auto firstFormula = firstLibrary.ParseNatural(argv[2]);
   const auto secondFormula = secondLibrary.ParseNatural(argv[2]);
-  auto first = firstLibrary.Parse(firstFormula.c_str());
-  auto second = secondLibrary.Parse(secondFormula.c_str());
+  if (!firstFormula || !secondFormula) return 1;
+  auto firstParsed = firstLibrary.Parse(firstFormula.GetValue()->c_str());
+  auto secondParsed = secondLibrary.Parse(secondFormula.GetValue()->c_str());
+  if (!firstParsed || !secondParsed) return 1;
+  auto first = std::move(*firstParsed.GetValue());
+  auto second = std::move(*secondParsed.GetValue());
 
   if (first.GetStatus() != qin::JianziStatus::Renderable ||
       second.GetStatus() != qin::JianziStatus::Renderable) {
@@ -71,89 +100,90 @@ int main(int argc, char** argv) {
 
   constexpr auto fallbackName = u8"😀";
   const auto fallbackFormula = firstLibrary.ParseNatural(fallbackName);
-  const auto fallback = firstLibrary.Parse(fallbackFormula.c_str());
-  if (fallbackFormula != fallbackName || fallback.GetStatus() != qin::JianziStatus::Fallback ||
+  if (!fallbackFormula) return 1;
+  const auto fallbackParsed = firstLibrary.Parse(fallbackFormula.GetValue()->c_str());
+  if (!fallbackParsed) return 1;
+  const auto& fallback = *fallbackParsed.GetValue();
+  const auto fallbackPaths = fallback.RenderPath();
+  if (*fallbackFormula.GetValue() != fallbackName || fallback.GetStatus() != qin::JianziStatus::Fallback ||
       fallback.GetFallbackName() != fallbackName || !fallback.GetMissingNames().empty() ||
-      !fallback.RenderPath().empty()) {
+      !fallbackPaths || !fallbackPaths.GetValue()->empty()) {
     std::cerr << "A single unknown character did not produce a fallback result.\n";
     return 1;
   }
 
-  const auto aliasFallback = fallbackLibrary.Parse("fallback-test-alias");
-  if (aliasFallback.GetStatus() != qin::JianziStatus::Fallback ||
-      aliasFallback.GetFallbackName() != fallbackName) {
+  const auto aliasParsed = fallbackLibrary.Parse("fallback-test-alias");
+  if (!aliasParsed || aliasParsed.GetValue()->GetStatus() != qin::JianziStatus::Fallback ||
+      aliasParsed.GetValue()->GetFallbackName() != fallbackName) {
     std::cerr << "An alias targeting an unknown character did not preserve the fallback target.\n";
     return 1;
   }
 
-  const auto missing = firstLibrary.Parse(("(" + firstFormula + ")/" + fallbackName).c_str());
+  const auto missingParsed =
+      firstLibrary.Parse(("(" + *firstFormula.GetValue() + ")/" + fallbackName).c_str());
+  if (!missingParsed) return 1;
+  const auto& missing = *missingParsed.GetValue();
+  const auto missingPaths = missing.RenderPath();
   if (missing.GetStatus() != qin::JianziStatus::Missing || missing.GetMissingNames().size() != 1 ||
       missing.GetMissingNames().front() != fallbackName || !missing.GetFallbackName().empty() ||
-      !missing.RenderPath().empty()) {
+      !missingPaths || !missingPaths.GetValue()->empty()) {
     std::cerr << "An unknown character in a composition did not produce a missing result.\n";
     return 1;
   }
 
-  if (firstLibrary.Parse(" ").GetStatus() != qin::JianziStatus::Empty) {
+  const auto empty = firstLibrary.Parse(" ");
+  if (!empty || empty.GetValue()->GetStatus() != qin::JianziStatus::Empty) {
     std::cerr << "An empty formula was not marked empty.\n";
     return 1;
   }
 
-  bool invalidFormulaRejected = false;
-  try {
-    static_cast<void>(firstLibrary.Parse(u8"😀/"));
-  } catch (const std::invalid_argument&) {
-    invalidFormulaRejected = true;
-  }
-  if (!invalidFormulaRejected) {
+  const auto invalidFormula = firstLibrary.Parse(u8"😀/");
+  if (invalidFormula || invalidFormula.GetError()->code != qin::JianziErrorCode::InvalidFormula) {
     std::cerr << "An invalid formula was not rejected.\n";
     return 1;
   }
 
   const auto firstPaths = first.RenderPath();
-  if (firstPaths.empty() || second.RenderPath().empty()) {
+  const auto secondPaths = second.RenderPath();
+  if (!firstPaths || !secondPaths || firstPaths.GetValue()->empty() || secondPaths.GetValue()->empty()) {
     std::cerr << "An independently loaded library failed to render.\n";
     return 1;
   }
 
   const auto copied = first;
-  if (!SamePaths(firstPaths, copied.RenderPath())) {
+  const auto copiedPaths = copied.RenderPath();
+  if (!copiedPaths || !SamePaths(*firstPaths.GetValue(), *copiedPaths.GetValue())) {
     std::cerr << "Copy construction changed the rendered tree.\n";
     return 1;
   }
 
-  auto assigned = firstLibrary.Parse(firstFormula.c_str());
+  auto assignedParsed = firstLibrary.Parse(firstFormula.GetValue()->c_str());
+  if (!assignedParsed) return 1;
+  auto assigned = std::move(*assignedParsed.GetValue());
   assigned = first;
-  if (!SamePaths(firstPaths, assigned.RenderPath())) {
+  const auto assignedPaths = assigned.RenderPath();
+  if (!assignedPaths || !SamePaths(*firstPaths.GetValue(), *assignedPaths.GetValue())) {
     std::cerr << "Copy assignment changed the rendered tree.\n";
     return 1;
   }
 
-  bool rejected = false;
-  try {
-    const auto invalid = first & second;
-    static_cast<void>(invalid);
-  } catch (const std::invalid_argument&) {
-    rejected = true;
-  }
-  if (!rejected) {
+  const auto invalidComposition = first & second;
+  if (invalidComposition ||
+      invalidComposition.GetError()->code != qin::JianziErrorCode::ContextMismatch) {
     std::cerr << "Cross-library composition was not rejected.\n";
     return 1;
   }
 
-  rejected = false;
-  try {
-    assigned = second;
-  } catch (const std::invalid_argument&) {
-    rejected = true;
-  }
-  if (!rejected) {
-    std::cerr << "Cross-library assignment was not rejected.\n";
+  assigned = second;
+  const auto unchangedPaths = assigned.RenderPath();
+  if (!unchangedPaths || !SamePaths(*firstPaths.GetValue(), *unchangedPaths.GetValue())) {
+    std::cerr << "Cross-library assignment changed the destination.\n";
     return 1;
   }
 
   auto movedLibrary = std::move(firstLibrary);
-  if (first.RenderPath().empty()) {
+  const auto movedPaths = first.RenderPath();
+  if (!movedPaths || movedPaths.GetValue()->empty()) {
     std::cerr << "Moving the owning library invalidated its context address.\n";
     return 1;
   }

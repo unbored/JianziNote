@@ -28,8 +28,8 @@ using namespace qin;
 enum class ArrayDirection { Vertical, Horizontal };
 
 // 阵列
-std::string ProcessArray(const JianziLibrary &library, std::string jianzi_str,
-                         ArrayDirection dir) {
+Result<std::string> ProcessArray(const JianziLibrary &library, std::string jianzi_str,
+                                 ArrayDirection dir) {
   std::string input_str = jianzi_str;
   // 根据逗号分割字符串
   std::vector<std::string> sub_strs;
@@ -54,9 +54,12 @@ std::string ProcessArray(const JianziLibrary &library, std::string jianzi_str,
 
   for (int i = 0; i < sub_strs.size(); ++i) {
     // 计算一个减字
-    Jianzi jianzi =
-        library.Parse(library.ParseNatural(sub_strs[i].c_str()).c_str());
-    auto path = jianzi.RenderPath();
+    const auto formula = library.ParseNatural(sub_strs[i].c_str());
+    if (!formula) return Result<std::string>::Failure(*formula.GetError());
+    const auto jianzi = library.Parse(formula.GetValue()->c_str());
+    if (!jianzi) return Result<std::string>::Failure(*jianzi.GetError());
+    auto path = jianzi.GetValue()->RenderPath();
+    if (!path) return Result<std::string>::Failure(*path.GetError());
 
     // 创建boundingbox，根据boundingbox缩放笔画
     BoundingBox box;
@@ -75,7 +78,7 @@ std::string ProcessArray(const JianziLibrary &library, std::string jianzi_str,
       box.y = 1.0f - sub_w;
     }
 
-    for (auto &p : path) {
+    for (auto &p : *path.GetValue()) {
       for (auto &pt : p.pts) {
         pt = box * pt;
       }
@@ -94,21 +97,23 @@ std::string ProcessArray(const JianziLibrary &library, std::string jianzi_str,
 
   ret += "}\n";
 
-  return ret;
+  return Result<std::string>::Success(std::move(ret));
 }
 
 // 单字
-std::string ProcessSingle(const JianziLibrary &library, std::string jianzi_str) {
-  Jianzi jianzi =
-      library.Parse(library.ParseNatural(jianzi_str.c_str()).c_str());
-
-  auto path_data = jianzi.RenderPath();
+Result<std::string> ProcessSingle(const JianziLibrary &library, std::string jianzi_str) {
+  const auto formula = library.ParseNatural(jianzi_str.c_str());
+  if (!formula) return Result<std::string>::Failure(*formula.GetError());
+  const auto jianzi = library.Parse(formula.GetValue()->c_str());
+  if (!jianzi) return Result<std::string>::Failure(*jianzi.GetError());
+  auto path_data = jianzi.GetValue()->RenderPath();
+  if (!path_data) return Result<std::string>::Failure(*path_data.GetError());
 
   // 创建boundingbox，根据boundingbox缩放笔画
   BoundingBox box;
   box.x = -0.5f;  // 垂直居中
 
-  for (auto &p : path_data) {
+  for (auto &p : *path_data.GetValue()) {
     for (auto &pt : p.pts) {
       pt = box * pt;
     }
@@ -116,7 +121,7 @@ std::string ProcessSingle(const JianziLibrary &library, std::string jianzi_str) 
 
   // 根据path绘制
   qin::LilypondRenderer renderer;
-  auto ly_result = renderer.Render(path_data);
+  auto ly_result = renderer.Render(*path_data.GetValue());
 
   std::string ret = "\\markup{\n";
   ret += "\\scale \\jianziSize\n";
@@ -125,7 +130,7 @@ std::string ProcessSingle(const JianziLibrary &library, std::string jianzi_str) 
 
   ret += "}\n";
 
-  return ret;
+  return Result<std::string>::Success(std::move(ret));
 }
 
 int main(int argc, char **argv) {
@@ -213,24 +218,42 @@ int main(int argc, char **argv) {
     std::cerr << "Unable to read library file: " << db_file << std::endl;
     return -1;
   }
-  auto library = qin::JianziLibrary::Load(library_data.data(), library_data.size());
+  auto loaded = qin::JianziLibrary::Load(library_data.data(), library_data.size());
+  if (!loaded) {
+    std::cerr << loaded.GetError()->message << std::endl;
+    return -1;
+  }
+  auto library = std::move(*loaded.GetValue());
 
   // 根据提取结果输出文件
   std::ofstream fout("jianzidef.ly");
   fout << "jianziSize = #'(4 . 4)" << std::endl;
   for (auto &j : jianzi_str) {
     // 普通减字
-    fout << "\"jz:" << j << "\" = " << ProcessSingle(library, j);
+    const auto rendered = ProcessSingle(library, j);
+    if (!rendered) {
+      std::cerr << rendered.GetError()->message << std::endl;
+      return -1;
+    }
+    fout << "\"jz:" << j << "\" = " << *rendered.GetValue();
   }
   for (auto &j : jianzi_str_v) {
     // 竖排小字
-    fout << "\"jzv:" << j
-         << "\" = " << ProcessArray(library, j, ArrayDirection::Vertical);
+    const auto rendered = ProcessArray(library, j, ArrayDirection::Vertical);
+    if (!rendered) {
+      std::cerr << rendered.GetError()->message << std::endl;
+      return -1;
+    }
+    fout << "\"jzv:" << j << "\" = " << *rendered.GetValue();
   }
   for (auto &j : jianzi_str_h) {
     // 横排小字
-    fout << "\"jzh:" << j
-         << "\" = " << ProcessArray(library, j, ArrayDirection::Horizontal);
+    const auto rendered = ProcessArray(library, j, ArrayDirection::Horizontal);
+    if (!rendered) {
+      std::cerr << rendered.GetError()->message << std::endl;
+      return -1;
+    }
+    fout << "\"jzh:" << j << "\" = " << *rendered.GetValue();
   }
   fout.close();
 

@@ -7,7 +7,6 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -21,13 +20,19 @@
 
 namespace {
 
-std::vector<std::uint8_t> ReadBinaryFile(const std::string& path) {
+qin::Result<std::vector<std::uint8_t>> ReadBinaryFile(const std::string& path) {
   std::ifstream input(path, std::ios::binary);
-  if (!input) throw std::runtime_error("Unable to open library file: " + path);
+  if (!input) {
+    return qin::Result<std::vector<std::uint8_t>>::Failure(
+        {qin::JianziErrorCode::IoError, "Unable to open library file: " + path});
+  }
   std::vector<std::uint8_t> result{
       std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-  if (input.bad()) throw std::runtime_error("Unable to read library file: " + path);
-  return result;
+  if (input.bad()) {
+    return qin::Result<std::vector<std::uint8_t>>::Failure(
+        {qin::JianziErrorCode::IoError, "Unable to read library file: " + path});
+  }
+  return qin::Result<std::vector<std::uint8_t>>::Success(std::move(result));
 }
 
 #ifdef _WIN32
@@ -63,25 +68,42 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  try {
-    const auto libraryData = ReadBinaryFile(arguments[1]);
-    auto library = qin::JianziLibrary::Load(libraryData.data(), libraryData.size());
-    const auto formula = library.ParseNatural(arguments[2].c_str());
-    const auto jianzi = library.Parse(formula.c_str());
-    const auto svg = qin::SvgRenderer().Render(jianzi.RenderPath());
+  auto libraryData = ReadBinaryFile(arguments[1]);
+  if (!libraryData) {
+    std::cerr << "jianzi2svg: " << libraryData.GetError()->message << '\n';
+    return 1;
+  }
+  auto loaded = qin::JianziLibrary::Load(libraryData.GetValue()->data(), libraryData.GetValue()->size());
+  if (!loaded) {
+    std::cerr << "jianzi2svg: " << loaded.GetError()->message << '\n';
+    return 1;
+  }
+  auto library = std::move(*loaded.GetValue());
+  const auto formula = library.ParseNatural(arguments[2].c_str());
+  if (!formula) {
+    std::cerr << "jianzi2svg: " << formula.GetError()->message << '\n';
+    return 1;
+  }
+  const auto jianzi = library.Parse(formula.GetValue()->c_str());
+  if (!jianzi) {
+    std::cerr << "jianzi2svg: " << jianzi.GetError()->message << '\n';
+    return 1;
+  }
+  const auto paths = jianzi.GetValue()->RenderPath();
+  if (!paths) {
+    std::cerr << "jianzi2svg: " << paths.GetError()->message << '\n';
+    return 1;
+  }
+  const auto svg = qin::SvgRenderer().Render(*paths.GetValue());
 
-    std::ofstream output(arguments[3], std::ios::binary);
-    if (!output) {
-      std::cerr << "Unable to open output file: " << arguments[3] << '\n';
-      return 1;
-    }
-    output << svg;
-    if (!output) {
-      std::cerr << "Unable to write output file: " << arguments[3] << '\n';
-      return 1;
-    }
-  } catch (const std::exception& error) {
-    std::cerr << "jianzi2svg: " << error.what() << '\n';
+  std::ofstream output(arguments[3], std::ios::binary);
+  if (!output) {
+    std::cerr << "Unable to open output file: " << arguments[3] << '\n';
+    return 1;
+  }
+  output << svg;
+  if (!output) {
+    std::cerr << "Unable to write output file: " << arguments[3] << '\n';
     return 1;
   }
   return 0;

@@ -14,7 +14,6 @@
 #include <optional>
 #include <set>
 #include <stack>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -31,6 +30,7 @@ namespace {
 struct JianziInfo {
     std::string name;
     std::string type = "Other";
+    size_t codepoint_count = 0;
 };
 
 }  // namespace
@@ -49,7 +49,7 @@ struct Jianzi::LibraryData {
 };
 
 struct JianziContext {
-    static std::unique_ptr<JianziContext> Create(const nlohmann::json& library);
+    static Result<std::unique_ptr<JianziContext>> Create(const nlohmann::json& library);
 
     Jianzi::LibraryData m_library;
     std::unique_ptr<StrokeDescRenderer> m_renderer;
@@ -60,9 +60,71 @@ struct JianziContext {
 
 namespace {
 
-bool Flag(const nlohmann::json& flags, const char* long_name, const char* short_name) {
-    if (flags.contains(long_name)) return flags.at(long_name).get<bool>();
-    return flags.value(short_name, false);
+const nlohmann::json* Member(const nlohmann::json& object, const char* name) {
+    if (!object.is_object()) return nullptr;
+    const auto found = object.find(name);
+    return found == object.end() ? nullptr : &*found;
+}
+
+template <typename T>
+Result<T> LibraryError(std::string message) {
+    return Result<T>::Failure({JianziErrorCode::InvalidLibrary, std::move(message)});
+}
+
+bool OptionalString(const nlohmann::json& object, const char* name, std::string& output) {
+    const auto value = Member(object, name);
+    if (!value) return true;
+    if (!value->is_string()) return false;
+    output = value->get<std::string>();
+    return true;
+}
+
+bool OptionalFloat(const nlohmann::json& object, const char* name, float& output) {
+    const auto value = Member(object, name);
+    if (!value) return true;
+    if (!value->is_number()) return false;
+    const auto number = value->get<double>();
+    if (!std::isfinite(number) || number < -std::numeric_limits<float>::max() ||
+        number > std::numeric_limits<float>::max()) return false;
+    output = static_cast<float>(number);
+    return true;
+}
+
+bool RequiredInt(const nlohmann::json& object, const char* name, int& output) {
+    const auto value = Member(object, name);
+    if (!value || !value->is_number_integer()) return false;
+    const auto number = value->get<std::int64_t>();
+    if (number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max()) return false;
+    output = static_cast<int>(number);
+    return true;
+}
+
+bool Flag(const nlohmann::json& flags, const char* long_name, const char* short_name, bool& output) {
+    const auto value = Member(flags, long_name) ? Member(flags, long_name) : Member(flags, short_name);
+    if (!value) {
+        output = false;
+        return true;
+    }
+    if (!value->is_boolean()) return false;
+    output = value->get<bool>();
+    return true;
+}
+
+bool ReadFlags(const nlohmann::json& flags, Jianzi::BorderFlags& output) {
+    return flags.is_object() && Flag(flags, "top", "t", output.t) &&
+           Flag(flags, "bottom", "b", output.b) && Flag(flags, "left", "l", output.l) &&
+           Flag(flags, "right", "r", output.r);
+}
+
+bool ReadPoint(const nlohmann::json& source, Point2f& output) {
+    if (!source.is_array() || source.size() != 2 || !source[0].is_number() || !source[1].is_number()) {
+        return false;
+    }
+    const auto x = source[0].get<double>();
+    const auto y = source[1].get<double>();
+    if (!std::isfinite(x) || !std::isfinite(y)) return false;
+    output = {static_cast<float>(x), static_cast<float>(y)};
+    return std::isfinite(output.x) && std::isfinite(output.y);
 }
 
 VertexRegion ParseVertexRegion(const std::string& region) {
@@ -73,122 +135,187 @@ VertexRegion ParseVertexRegion(const std::string& region) {
 
 }  // namespace
 
-JianziLibrary JianziLibrary::Load(const std::uint8_t* data, std::size_t size) {
-    const auto result = cbor::Read(data, size);
-    if (!result) {
-        throw std::runtime_error(result.error->message);
-    }
-    return JianziLibrary(JianziContext::Create(result.document));
+Result<JianziLibrary> JianziLibrary::Load(const std::uint8_t* data, std::size_t size) {
+    auto document = cbor::Read(data, size);
+    if (!document) return Result<JianziLibrary>::Failure(*document.GetError());
+    auto context = JianziContext::Create(*document.GetValue());
+    if (!context) return Result<JianziLibrary>::Failure(*context.GetError());
+    return Result<JianziLibrary>::Success(JianziLibrary(std::move(*context.GetValue())));
 }
 
-std::unique_ptr<JianziContext> JianziContext::Create(const nlohmann::json& library) {
-    if (library.value("format", std::string{}) != "jianzinote-stroke-library" ||
-        library.value("format_version", 0) != 2 || !library.contains("glyphs") ||
-        !library.at("glyphs").is_object() || !library.contains("stroke_descs")) {
-        throw std::runtime_error("Jianzi requires a StrokeDesc v2 CBOR library.");
+Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::json& library) {
+    const auto format = Member(library, "format");
+    const auto version = Member(library, "format_version");
+    const auto glyphs = Member(library, "glyphs");
+    const auto stroke_descs = Member(library, "stroke_descs");
+    if (!format || !format->is_string() || format->get<std::string>() != "jianzinote-stroke-library" ||
+        !version || !version->is_number_integer() || version->get<std::int64_t>() != 2 || !glyphs ||
+        !glyphs->is_object() || !stroke_descs) {
+        return LibraryError<std::unique_ptr<JianziContext>>(
+            "Jianzi requires a StrokeDesc v2 CBOR library.");
     }
-    auto renderer = std::make_unique<StrokeDescRenderer>(library.at("stroke_descs"));
+    auto renderer_result = StrokeDescRenderer::Create(*stroke_descs);
+    if (!renderer_result) {
+        return Result<std::unique_ptr<JianziContext>>::Failure(*renderer_result.GetError());
+    }
+    auto renderer = std::move(*renderer_result.GetValue());
 
     Jianzi::Layout layout;
-    if (const auto found = library.find("layout"); found != library.end() && found->is_object()) {
-        layout.units_per_em = found->value("units_per_em", layout.units_per_em);
-        layout.baseline_y = found->value("baseline_y", layout.baseline_y);
-        if (const auto normalization = found->find("glyph_normalization");
-            normalization != found->end() && normalization->is_object()) {
-            layout.normalization_scale = normalization->value("scale", layout.normalization_scale);
-            layout.normalization_tx = normalization->value("translate_x", layout.normalization_tx);
-            layout.normalization_ty = normalization->value("translate_y", layout.normalization_ty);
+    if (const auto found = Member(library, "layout")) {
+        if (!found->is_object() || !OptionalFloat(*found, "units_per_em", layout.units_per_em) ||
+            !OptionalFloat(*found, "baseline_y", layout.baseline_y)) {
+            return LibraryError<std::unique_ptr<JianziContext>>("Library layout contains invalid metrics.");
         }
-        if (const auto composition = found->find("composition");
-            composition != found->end() && composition->is_object()) {
-            layout.weight_area = composition->value("weight_area", layout.weight_area);
-            layout.weight_base = composition->value("weight_base", layout.weight_base);
-            layout.border_width = composition->value("border_width", layout.border_width);
-            layout.zero_segment_edge_width =
-                composition->value("zero_segment_edge_width", layout.zero_segment_edge_width);
-            layout.capsule_weight_area = composition->value("capsule_weight_area", layout.capsule_weight_area);
-            layout.capsule_weight_base = composition->value("capsule_weight_base", layout.capsule_weight_base);
+        if (const auto normalization = Member(*found, "glyph_normalization")) {
+            if (!normalization->is_object() ||
+                !OptionalFloat(*normalization, "scale", layout.normalization_scale) ||
+                !OptionalFloat(*normalization, "translate_x", layout.normalization_tx) ||
+                !OptionalFloat(*normalization, "translate_y", layout.normalization_ty)) {
+                return LibraryError<std::unique_ptr<JianziContext>>(
+                    "Library glyph normalization contains invalid values.");
+            }
+        }
+        if (const auto composition = Member(*found, "composition")) {
+            if (!composition->is_object() || !OptionalFloat(*composition, "weight_area", layout.weight_area) ||
+                !OptionalFloat(*composition, "weight_base", layout.weight_base) ||
+                !OptionalFloat(*composition, "border_width", layout.border_width) ||
+                !OptionalFloat(*composition, "zero_segment_edge_width", layout.zero_segment_edge_width) ||
+                !OptionalFloat(*composition, "capsule_weight_area", layout.capsule_weight_area) ||
+                !OptionalFloat(*composition, "capsule_weight_base", layout.capsule_weight_base)) {
+                return LibraryError<std::unique_ptr<JianziContext>>(
+                    "Library composition contains invalid values.");
+            }
         }
     }
     if (!std::isfinite(layout.normalization_scale) || std::abs(layout.normalization_scale) < 1e-9f) {
-        throw std::runtime_error("layout.glyph_normalization.scale must be finite and non-zero.");
+        return LibraryError<std::unique_ptr<JianziContext>>(
+            "layout.glyph_normalization.scale must be finite and non-zero.");
     }
     if (!std::isfinite(layout.normalization_tx) || !std::isfinite(layout.normalization_ty) ||
         !std::isfinite(layout.units_per_em) || layout.units_per_em <= 0 || !std::isfinite(layout.baseline_y)) {
-        throw std::runtime_error("Library layout contains invalid metrics.");
+        return LibraryError<std::unique_ptr<JianziContext>>("Library layout contains invalid metrics.");
     }
-    const auto require_nonnegative = [](float value, const char* name) {
-        if (!std::isfinite(value) || value < 0) throw std::runtime_error(std::string(name) + " must be non-negative.");
+    const auto nonnegative = [](float value) {
+        return std::isfinite(value) && value >= 0;
     };
-    require_nonnegative(layout.weight_area, "layout.composition.weight_area");
-    require_nonnegative(layout.weight_base, "layout.composition.weight_base");
-    require_nonnegative(layout.zero_segment_edge_width, "layout.composition.zero_segment_edge_width");
-    require_nonnegative(layout.capsule_weight_area, "layout.composition.capsule_weight_area");
-    require_nonnegative(layout.capsule_weight_base, "layout.composition.capsule_weight_base");
-    if (!std::isfinite(layout.border_width)) {
-        throw std::runtime_error("layout.composition.border_width must be finite.");
+    if (!nonnegative(layout.weight_area) || !nonnegative(layout.weight_base) ||
+        !nonnegative(layout.zero_segment_edge_width) || !nonnegative(layout.capsule_weight_area) ||
+        !nonnegative(layout.capsule_weight_base) || !std::isfinite(layout.border_width)) {
+        return LibraryError<std::unique_ptr<JianziContext>>("Library composition contains invalid metrics.");
     }
 
     auto context = std::make_unique<JianziContext>();
-    for (auto source = library.at("glyphs").begin(); source != library.at("glyphs").end(); ++source) {
+    for (auto source = glyphs->begin(); source != glyphs->end(); ++source) {
+        if (!source.value().is_object()) {
+            return LibraryError<std::unique_ptr<JianziContext>>("Glyph must be an object: " + source.key());
+        }
+        const auto decoded_name = utf8::Decode(source.key());
+        if (!decoded_name || decoded_name.GetValue()->empty()) {
+            return LibraryError<std::unique_ptr<JianziContext>>("Glyph name is not valid UTF-8.");
+        }
         Jianzi::LibraryData::Glyph glyph;
-        glyph.type = source.value().value("type", std::string{"Other"});
-        const auto& flags = source.value().at("border_flags");
-        glyph.border_flags = {Flag(flags, "top", "t"), Flag(flags, "bottom", "b"),
-                              Flag(flags, "left", "l"), Flag(flags, "right", "r")};
-        glyph.vertical_segments = source.value().at("vertical_segments").get<int>();
-        if (const auto capsule = source.value().find("capsule"); capsule != source.value().end()) {
+        if (!OptionalString(source.value(), "type", glyph.type)) {
+            return LibraryError<std::unique_ptr<JianziContext>>("Glyph type must be a string: " + source.key());
+        }
+        const auto flags = Member(source.value(), "border_flags");
+        if (!flags || !ReadFlags(*flags, glyph.border_flags) ||
+            !RequiredInt(source.value(), "vertical_segments", glyph.vertical_segments)) {
+            return LibraryError<std::unique_ptr<JianziContext>>("Glyph metadata is invalid: " + source.key());
+        }
+        if (const auto capsule = Member(source.value(), "capsule")) {
+            if (!capsule->is_object()) {
+                return LibraryError<std::unique_ptr<JianziContext>>("Glyph capsule is invalid: " + source.key());
+            }
             Jianzi::Capsule compiled;
-            const auto& capsule_flags = capsule->at("border_flags");
-            compiled.border_flags = {Flag(capsule_flags, "top", "t"), Flag(capsule_flags, "bottom", "b"),
-                                     Flag(capsule_flags, "left", "l"), Flag(capsule_flags, "right", "r")};
-            compiled.v_segments = capsule->at("vertical_segments").get<int>();
-            compiled.tl = {capsule->at("top_left").at(0).get<float>(),
-                           capsule->at("top_left").at(1).get<float>()};
-            compiled.br = {capsule->at("bottom_right").at(0).get<float>(),
-                           capsule->at("bottom_right").at(1).get<float>()};
+            const auto capsule_flags = Member(*capsule, "border_flags");
+            const auto top_left = Member(*capsule, "top_left");
+            const auto bottom_right = Member(*capsule, "bottom_right");
+            if (!capsule_flags || !ReadFlags(*capsule_flags, compiled.border_flags) ||
+                !RequiredInt(*capsule, "vertical_segments", compiled.v_segments) || !top_left ||
+                !ReadPoint(*top_left, compiled.tl) || !bottom_right || !ReadPoint(*bottom_right, compiled.br)) {
+                return LibraryError<std::unique_ptr<JianziContext>>("Glyph capsule is invalid: " + source.key());
+            }
             glyph.capsule = compiled;
         }
-        for (const auto& stroke_source : source.value().at("strokes")) {
+        const auto strokes = Member(source.value(), "strokes");
+        if (!strokes || !strokes->is_array()) {
+            return LibraryError<std::unique_ptr<JianziContext>>("Glyph strokes must be an array: " + source.key());
+        }
+        for (const auto& stroke_source : *strokes) {
             Stroke stroke;
-            stroke.desc = stroke_source.at("desc").get<std::string>();
-            if (!renderer->Contains(stroke.desc)) {
-                throw std::runtime_error("Glyph " + source.key() + " references unknown StrokeDesc " + stroke.desc + ".");
+            const auto desc = Member(stroke_source, "desc");
+            const auto width = Member(stroke_source, "width");
+            const auto nodes = Member(stroke_source, "nodes");
+            if (!desc || !desc->is_string() || !width || !width->is_number() || !nodes || !nodes->is_array()) {
+                return LibraryError<std::unique_ptr<JianziContext>>("Glyph stroke is invalid: " + source.key());
             }
-            stroke.width = stroke_source.at("width").get<float>();
-            for (const auto& vertex : stroke_source.at("nodes")) {
-                stroke.vertice.push_back(
-                    {{vertex.at("x").get<float>(), vertex.at("y").get<float>()},
-                     ParseVertexRegion(vertex.value("region", std::string{"Top"}))});
+            stroke.desc = desc->get<std::string>();
+            if (!renderer->Contains(stroke.desc)) {
+                return LibraryError<std::unique_ptr<JianziContext>>(
+                    "Glyph " + source.key() + " references unknown StrokeDesc " + stroke.desc + ".");
+            }
+            const auto stroke_width = width->get<double>();
+            if (!std::isfinite(stroke_width)) {
+                return LibraryError<std::unique_ptr<JianziContext>>("Glyph stroke width is invalid: " + source.key());
+            }
+            stroke.width = static_cast<float>(stroke_width);
+            for (const auto& vertex : *nodes) {
+                const auto x = Member(vertex, "x");
+                const auto y = Member(vertex, "y");
+                if (!x || !x->is_number() || !y || !y->is_number()) {
+                    return LibraryError<std::unique_ptr<JianziContext>>("Glyph stroke node is invalid: " + source.key());
+                }
+                const auto px = x->get<double>();
+                const auto py = y->get<double>();
+                std::string region = "Top";
+                if (!std::isfinite(px) || !std::isfinite(py) || !OptionalString(vertex, "region", region)) {
+                    return LibraryError<std::unique_ptr<JianziContext>>("Glyph stroke node is invalid: " + source.key());
+                }
+                stroke.vertice.push_back({{static_cast<float>(px), static_cast<float>(py)},
+                                          ParseVertexRegion(region)});
             }
             glyph.strokes.push_back(std::move(stroke));
         }
         if (!context->m_library.glyphs.emplace(source.key(), std::move(glyph)).second) {
-            throw std::runtime_error("Duplicate glyph name: " + source.key());
+            return LibraryError<std::unique_ptr<JianziContext>>("Duplicate glyph name: " + source.key());
         }
     }
 
     for (const auto& [name, glyph] : context->m_library.glyphs) {
-        context->m_jianziList.push_back({name, glyph.type});
+        const auto decoded = utf8::Decode(name);
+        context->m_jianziList.push_back({name, glyph.type, decoded.GetValue()->size()});
     }
-    for (const auto& alias : library.value("aliases", nlohmann::json::array())) {
-        const auto name = alias.at("alias").get<std::string>();
-        const auto target = alias.at("glyph").get<std::string>();
-        if (name.empty() || target.empty() || !context->m_library.aliases.emplace(name, target).second) {
-            throw std::runtime_error("Alias names and targets must be non-empty and names must be unique.");
+    const auto aliases = Member(library, "aliases");
+    if (aliases && !aliases->is_array()) {
+        return LibraryError<std::unique_ptr<JianziContext>>("Library aliases must be an array.");
+    }
+    if (aliases) for (const auto& alias : *aliases) {
+        const auto name_source = Member(alias, "alias");
+        const auto target_source = Member(alias, "glyph");
+        if (!name_source || !name_source->is_string() || !target_source || !target_source->is_string()) {
+            return LibraryError<std::unique_ptr<JianziContext>>("Alias names and targets must be strings.");
         }
-        context->m_aliasList.push_back({name, alias.value("type", std::string{"Other"})});
+        const auto name = name_source->get<std::string>();
+        const auto target = target_source->get<std::string>();
+        const auto decoded = utf8::Decode(name);
+        const auto target_decoded = utf8::Decode(target);
+        std::string type = "Other";
+        if (!decoded || decoded.GetValue()->empty() || !target_decoded || target.empty() ||
+            !OptionalString(alias, "type", type) ||
+            !context->m_library.aliases.emplace(name, target).second) {
+            return LibraryError<std::unique_ptr<JianziContext>>(
+                "Alias names and targets must be non-empty valid UTF-8 and names must be unique.");
+        }
+        context->m_aliasList.push_back({name, type, decoded.GetValue()->size()});
     }
     const auto compare = [](const JianziInfo& a, const JianziInfo& b) {
-        const auto an = utf8::Decode(a.name);
-        const auto bn = utf8::Decode(b.name);
-        return an.length() != bn.length() ? an.length() > bn.length() : an > bn;
+        return a.codepoint_count != b.codepoint_count ? a.codepoint_count > b.codepoint_count : a.name > b.name;
     };
     std::sort(context->m_jianziList.begin(), context->m_jianziList.end(), compare);
     std::sort(context->m_aliasList.begin(), context->m_aliasList.end(), compare);
     context->m_renderer = std::move(renderer);
     context->m_layout = layout;
-    return context;
+    return Result<std::unique_ptr<JianziContext>>::Success(std::move(context));
 }
 
 JianziLibrary::JianziLibrary(std::unique_ptr<JianziContext> context) : m_context(std::move(context)) {}
@@ -209,7 +336,8 @@ Jianzi::Jianzi(const JianziContext& context, const char* name) : m_context(conte
     if (m_name.empty()) return;
     const auto found = m_context.m_library.glyphs.find(m_name);
     if (found == m_context.m_library.glyphs.end()) {
-        if (utf8::Decode(m_name).size() == 1) {
+        const auto decoded = utf8::Decode(m_name);
+        if (decoded && decoded.GetValue()->size() == 1) {
             m_status = JianziStatus::Fallback;
         } else {
             m_status = JianziStatus::Missing;
@@ -230,33 +358,27 @@ Jianzi::Jianzi(const Jianzi& other) : m_context(other.m_context) { CopyData(othe
 
 Jianzi::Jianzi(Jianzi&& other) noexcept : m_context(other.m_context) { MoveData(std::move(other)); }
 
-Jianzi& Jianzi::operator=(const Jianzi& other) {
+Jianzi& Jianzi::operator=(const Jianzi& other) noexcept {
     if (this == &other) {
         return *this;
     }
-    CheckContext(other);
+    if (!HasSameContext(other)) return *this;
     CopyData(other);
     return *this;
 }
 
-Jianzi& Jianzi::operator=(Jianzi&& other) {
+Jianzi& Jianzi::operator=(Jianzi&& other) noexcept {
     if (this == &other) return *this;
-    CheckContext(other);
+    if (!HasSameContext(other)) return *this;
     MoveData(std::move(other));
     return *this;
 }
 
-void Jianzi::CheckContext(const Jianzi& other) const {
-    if (std::addressof(m_context) != std::addressof(other.m_context)) {
-        throw std::invalid_argument("Cannot combine or assign Jianzi objects from different libraries.");
-    }
+bool Jianzi::HasSameContext(const Jianzi& other) const noexcept {
+    return std::addressof(m_context) == std::addressof(other.m_context);
 }
 
 Jianzi Jianzi::MakeMissingCombination(const Jianzi& other, char operation) const {
-    if (m_status == JianziStatus::Empty || other.m_status == JianziStatus::Empty) {
-        throw std::invalid_argument("Cannot combine an empty Jianzi.");
-    }
-
     Jianzi result(m_context);
     result.m_name = "(" + m_name + operation + other.m_name + ")";
     result.m_status = JianziStatus::Missing;
@@ -309,7 +431,7 @@ void Jianzi::MoveData(Jianzi&& other) {
 }
 
 struct JianziOperator {
-    std::function<Jianzi(const Jianzi&, const Jianzi&)> op;
+    std::function<Result<Jianzi>(const Jianzi&, const Jianzi&)> op;
     size_t priority;
 };
 
@@ -329,10 +451,12 @@ const std::map<char32_t, JianziOperator> c_jianzi_operators = {
     {U'*', {[](const Jianzi& j1, const Jianzi& j2) { return j1 * j2; }, 4}},
 };
 
-Jianzi JianziLibrary::Parse(const char* u8_str) const {
+Result<Jianzi> JianziLibrary::Parse(const char* u8_str) const {
     Jianzi result(*m_context);
 
-    auto str = utf8::Decode(u8_str);
+    auto decoded_input = utf8::Decode(u8_str ? std::string_view(u8_str) : std::string_view{});
+    if (!decoded_input) return Result<Jianzi>::Failure(*decoded_input.GetError());
+    auto str = std::move(*decoded_input.GetValue());
 
     // 清除所有空格
     auto ws_pos = str.find(U' ');
@@ -341,7 +465,7 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
         ws_pos = str.find(U' ');
     }
 
-    if (str.empty()) return result;
+    if (str.empty()) return Result<Jianzi>::Success(std::move(result));
 
     // 前后添加括号，有利于后续处理
     str = U"(" + str + U")";
@@ -351,10 +475,11 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
     size_t alias_expansions = 0;
 
     // 定义使用运算符op进行运算的函数
-    auto Calc = [&values](char32_t op) {
+    auto Calc = [&values](char32_t op) -> Result<void> {
         // std::cout << "Doing operation " << string(op) << std::endl;
         if (values.size() < 2) {
-            throw std::invalid_argument("Jianzi operator is missing an operand.");
+            return Result<void>::Failure(
+                {JianziErrorCode::InvalidFormula, "Jianzi operator is missing an operand."});
         }
 
         auto v2 = values.top();
@@ -362,7 +487,15 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
         auto v1 = values.top();
         values.pop();
 
-        values.push(c_jianzi_operators.at(op).op(v1, v2));
+        const auto operation = c_jianzi_operators.find(op);
+        if (operation == c_jianzi_operators.end() || !operation->second.op) {
+            return Result<void>::Failure(
+                {JianziErrorCode::InvalidFormula, "Jianzi formula contains an invalid operator."});
+        }
+        auto calculated = operation->second.op(v1, v2);
+        if (!calculated) return Result<void>::Failure(*calculated.GetError());
+        values.push(std::move(*calculated.GetValue()));
+        return Result<void>::Success();
     };
 
     while (str.length() > 0) {
@@ -376,7 +509,9 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                 // 不在字符串开头，先处理值
                 const auto sub = str.substr(0, sub_pos - str.begin());
 
-                const auto name = utf8::Encode(sub);
+                auto encoded_name = utf8::Encode(sub);
+                if (!encoded_name) return Result<Jianzi>::Failure(*encoded_name.GetError());
+                const auto& name = *encoded_name.GetValue();
                 if (m_context->m_library.glyphs.find(name) != m_context->m_library.glyphs.end()) {
                     values.push(Jianzi(*m_context, name.c_str()));
                 } else {
@@ -385,10 +520,13 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                         values.push(Jianzi(*m_context, name.c_str()));
                     } else {
                         if (++alias_expansions > 1024) {
-                            throw std::runtime_error(
-                                "Alias expansion did not terminate; the library probably contains a cycle.");
+                            return Result<Jianzi>::Failure(
+                                {JianziErrorCode::AliasCycle,
+                                 "Alias expansion did not terminate; the library probably contains a cycle."});
                         }
-                        str = U"(" + utf8::Decode(alias->second) + U")" + str.substr(sub_pos - str.begin());
+                        auto decoded_alias = utf8::Decode(alias->second);
+                        if (!decoded_alias) return Result<Jianzi>::Failure(*decoded_alias.GetError());
+                        str = U"(" + *decoded_alias.GetValue() + U")" + str.substr(sub_pos - str.begin());
                         continue;
                     }
                 }
@@ -411,31 +549,45 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                         break;
                     } else {
                         // 进行运算
-                        Calc(op);
+                        auto calculated = Calc(op);
+                        if (!calculated) return Result<Jianzi>::Failure(*calculated.GetError());
                     }
                 }
                 if (op != U'(') {
-                    throw std::invalid_argument("Jianzi formula has unmatched parentheses.");
+                    return Result<Jianzi>::Failure(
+                        {JianziErrorCode::InvalidFormula, "Jianzi formula has unmatched parentheses."});
                 }
             } else if (c == U'\'') {
                 // 引用，寻找配对引用并置换
                 size_t curr_quote = sub_pos - str.begin();
                 size_t next_quote = str.find(U'\'', curr_quote + 1);
                 if (next_quote == str.npos) {
-                    throw std::invalid_argument("Jianzi formula has an unmatched quote.");
+                    return Result<Jianzi>::Failure(
+                        {JianziErrorCode::InvalidFormula, "Jianzi formula has an unmatched quote."});
                 }
                 // 生成算式
                 const auto sub = str.substr(curr_quote + 1, next_quote - curr_quote - 1);
-                const auto sub_utf8 = utf8::Encode(sub);
-                const auto rep = utf8::Decode(ParseNatural(sub_utf8.c_str()));
+                auto sub_utf8 = utf8::Encode(sub);
+                if (!sub_utf8) return Result<Jianzi>::Failure(*sub_utf8.GetError());
+                auto natural = ParseNatural(sub_utf8.GetValue()->c_str());
+                if (!natural) return Result<Jianzi>::Failure(*natural.GetError());
+                auto rep = utf8::Decode(*natural.GetValue());
+                if (!rep) return Result<Jianzi>::Failure(*rep.GetError());
                 // 替换内容
-                str = U"(" + rep + U")" + str.substr(next_quote + 1);
+                str = U"(" + *rep.GetValue() + U")" + str.substr(next_quote + 1);
                 continue;
             } else {
                 // 普通算符
 
-                if (operators.empty() ||
-                    c_jianzi_operators.at(c).priority > c_jianzi_operators.at(operators.top()).priority) {
+                const auto current = c_jianzi_operators.find(c);
+                const auto previous = operators.empty() ? c_jianzi_operators.end()
+                                                        : c_jianzi_operators.find(operators.top());
+                if (current == c_jianzi_operators.end()) {
+                    return Result<Jianzi>::Failure(
+                        {JianziErrorCode::InvalidFormula, "Jianzi formula contains an invalid operator."});
+                }
+                if (operators.empty() || previous == c_jianzi_operators.end() ||
+                    current->second.priority > previous->second.priority) {
                     // 无旧运算符，或新运算符优先级更高
                     operators.push(c);
                 } else {
@@ -444,7 +596,8 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
                     char32_t op = operators.top();
                     operators.pop();
                     // 进行运算
-                    Calc(op);
+                    auto calculated = Calc(op);
+                    if (!calculated) return Result<Jianzi>::Failure(*calculated.GetError());
                     // 再将新运算符入栈
                     operators.push(c);
                 }
@@ -457,8 +610,9 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
     }
     if (str.length() > 0) {
         // 已经没有运算符，剩下的是值
-        const auto name = utf8::Encode(str);
-        values.push(Jianzi(*m_context, name.c_str()));
+        auto name = utf8::Encode(str);
+        if (!name) return Result<Jianzi>::Failure(*name.GetError());
+        values.push(Jianzi(*m_context, name.GetValue()->c_str()));
     }
 
     // 将剩下的运算符算完
@@ -466,21 +620,28 @@ Jianzi JianziLibrary::Parse(const char* u8_str) const {
         char32_t op = operators.top();
         operators.pop();
         if (op == U'(' || op == U')') {
-            throw std::invalid_argument("Jianzi formula has unmatched parentheses.");
+            return Result<Jianzi>::Failure(
+                {JianziErrorCode::InvalidFormula, "Jianzi formula has unmatched parentheses."});
         }
         // 进行运算
-        Calc(op);
+        auto calculated = Calc(op);
+        if (!calculated) return Result<Jianzi>::Failure(*calculated.GetError());
     }
 
-    if (values.empty()) return result;
-    if (values.size() != 1) throw std::invalid_argument("Jianzi formula is missing an operator.");
+    if (values.empty()) return Result<Jianzi>::Success(std::move(result));
+    if (values.size() != 1) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::InvalidFormula, "Jianzi formula is missing an operator."});
+    }
     result = values.top();
-    return result;
+    return Result<Jianzi>::Success(std::move(result));
 }
 
-std::string JianziLibrary::ParseNatural(const char* u8_str) const {
+Result<std::string> JianziLibrary::ParseNatural(const char* u8_str) const {
     // 初始化输入
-    auto input = utf8::Decode(u8_str);
+    auto decoded_input = utf8::Decode(u8_str ? std::string_view(u8_str) : std::string_view{});
+    if (!decoded_input) return Result<std::string>::Failure(*decoded_input.GetError());
+    auto input = std::move(*decoded_input.GetValue());
     // 清除所有空格
     auto ws_pos = input.find(U' ');
     while (ws_pos != input.npos) {
@@ -491,19 +652,22 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
 
     if (input_length == 0) {
         // 无字符
-        return std::string();
+        return Result<std::string>::Success(std::string{});
     } else if (input.front() == U'(' && input.back() == U')') {
         // 内容为公式，原样返回
-        return std::string(u8_str);
+        return Result<std::string>::Success(std::string(u8_str));
     }
 
     // 检索标记
     std::vector<bool> input_marks(input_length, false);
     std::vector<JianziInfo> info_list(input_length);
 
-    auto MarkInput = [&input, &input_marks, &info_list](const std::vector<JianziInfo>& input_list) {
+    auto MarkInput = [&input, &input_marks, &info_list](const std::vector<JianziInfo>& input_list)
+        -> Result<void> {
         for (auto& info : input_list) {
-            const auto info_name = utf8::Decode(info.name);
+            auto decoded_name = utf8::Decode(info.name);
+            if (!decoded_name) return Result<void>::Failure(*decoded_name.GetError());
+            const auto& info_name = *decoded_name.GetValue();
             size_t info_length = info_name.length();
             // 寻找所有点位
             auto pos = input.find(info_name);
@@ -530,18 +694,23 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
                 pos = input.find(info_name, pos + info_length);
             }
         }
+        return Result<void>::Success();
     };
 
     // 先对别名进行标记
-    MarkInput(m_context->m_aliasList);
+    auto marked = MarkInput(m_context->m_aliasList);
+    if (!marked) return Result<std::string>::Failure(*marked.GetError());
     // 再标记减字
-    MarkInput(m_context->m_jianziList);
+    marked = MarkInput(m_context->m_jianziList);
+    if (!marked) return Result<std::string>::Failure(*marked.GetError());
 
     // 未知字符仍保留为独立项。单独出现时可由字体 fallback；
     // 与其他项组合时，Parse 会将最终结果标记为 Missing。
     for (size_t i = 0; i < input_length; ++i) {
         if (input_marks[i]) continue;
-        info_list[i] = {utf8::Encode(std::u32string(1, input[i])), "Other"};
+        auto encoded = utf8::Encode(std::u32string(1, input[i]));
+        if (!encoded) return Result<std::string>::Failure(*encoded.GetError());
+        info_list[i] = {std::move(*encoded.GetValue()), "Other", 1};
         input_marks[i] = true;
     }
 
@@ -733,13 +902,20 @@ std::string JianziLibrary::ParseNatural(const char* u8_str) const {
         }
     }
 
-    return ret;
+    return Result<std::string>::Success(std::move(ret));
 }
 
-Jianzi Jianzi::operator&(const Jianzi& right) const {
-    CheckContext(right);
+Result<Jianzi> Jianzi::operator&(const Jianzi& right) const {
+    if (!HasSameContext(right)) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
+    }
+    if (m_status == JianziStatus::Empty || right.m_status == JianziStatus::Empty) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
+    }
     if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
-        return MakeMissingCombination(right, '&');
+        return Result<Jianzi>::Success(MakeMissingCombination(right, '&'));
     }
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "&" + right.m_name + ")";
@@ -770,13 +946,20 @@ Jianzi Jianzi::operator&(const Jianzi& right) const {
     ret.m_border_flags.r = right.m_border_flags.r;
 
     ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
-    return ret;
+    return Result<Jianzi>::Success(std::move(ret));
 }
 
-Jianzi Jianzi::operator|(const Jianzi& right) const {
-    CheckContext(right);
+Result<Jianzi> Jianzi::operator|(const Jianzi& right) const {
+    if (!HasSameContext(right)) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
+    }
+    if (m_status == JianziStatus::Empty || right.m_status == JianziStatus::Empty) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
+    }
     if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
-        return MakeMissingCombination(right, '|');
+        return Result<Jianzi>::Success(MakeMissingCombination(right, '|'));
     }
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "|" + right.m_name + ")";
@@ -804,13 +987,20 @@ Jianzi Jianzi::operator|(const Jianzi& right) const {
     ret.m_border_flags.r = right.m_border_flags.r;
 
     ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
-    return ret;
+    return Result<Jianzi>::Success(std::move(ret));
 }
 
-Jianzi Jianzi::operator<(const Jianzi& right) const {
-    CheckContext(right);
+Result<Jianzi> Jianzi::operator<(const Jianzi& right) const {
+    if (!HasSameContext(right)) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
+    }
+    if (m_status == JianziStatus::Empty || right.m_status == JianziStatus::Empty) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
+    }
     if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
-        return MakeMissingCombination(right, '<');
+        return Result<Jianzi>::Success(MakeMissingCombination(right, '<'));
     }
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "<" + right.m_name + ")";
@@ -843,13 +1033,20 @@ Jianzi Jianzi::operator<(const Jianzi& right) const {
     ret.m_border_flags.r = right.m_border_flags.r;
 
     ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
-    return ret;
+    return Result<Jianzi>::Success(std::move(ret));
 }
 
-Jianzi Jianzi::operator/(const Jianzi& below) const {
-    CheckContext(below);
+Result<Jianzi> Jianzi::operator/(const Jianzi& below) const {
+    if (!HasSameContext(below)) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
+    }
+    if (m_status == JianziStatus::Empty || below.m_status == JianziStatus::Empty) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
+    }
     if (m_status != JianziStatus::Renderable || below.m_status != JianziStatus::Renderable) {
-        return MakeMissingCombination(below, '/');
+        return Result<Jianzi>::Success(MakeMissingCombination(below, '/'));
     }
     Jianzi ret(m_context);
     ret.m_name = "(" + m_name + "/" + below.m_name + ")";
@@ -925,13 +1122,20 @@ Jianzi Jianzi::operator/(const Jianzi& below) const {
     ret.m_border_flags.r = m_border_flags.r || below.m_border_flags.r;
 
     ret.m_v_segments = total;
-    return ret;
+    return Result<Jianzi>::Success(std::move(ret));
 }
 
-Jianzi Jianzi::operator^(const Jianzi& below) const {
-    CheckContext(below);
+Result<Jianzi> Jianzi::operator^(const Jianzi& below) const {
+    if (!HasSameContext(below)) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
+    }
+    if (m_status == JianziStatus::Empty || below.m_status == JianziStatus::Empty) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
+    }
     if (m_status != JianziStatus::Renderable || below.m_status != JianziStatus::Renderable) {
-        return MakeMissingCombination(below, '^');
+        return Result<Jianzi>::Success(MakeMissingCombination(below, '^'));
     }
     Jianzi above = *this;
     if (above.m_v_segments > 0 && below.m_v_segments > 0 && above.m_v_segments > below.m_v_segments) {
@@ -940,15 +1144,23 @@ Jianzi Jianzi::operator^(const Jianzi& below) const {
                above.m_v_segments < below.m_v_segments * 0.3f) {
         above.m_v_segments = std::round(below.m_v_segments * 0.3f);
     }
-    Jianzi ret = above / below;
-    ret.m_name = "(" + m_name + "^" + below.m_name + ")";
-    return ret;
+    auto result = above / below;
+    if (!result) return result;
+    result.GetValue()->m_name = "(" + m_name + "^" + below.m_name + ")";
+    return result;
 }
 
-Jianzi Jianzi::operator*(const Jianzi& content) const {
-    CheckContext(content);
+Result<Jianzi> Jianzi::operator*(const Jianzi& content) const {
+    if (!HasSameContext(content)) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
+    }
+    if (m_status == JianziStatus::Empty || content.m_status == JianziStatus::Empty) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
+    }
     if (m_status != JianziStatus::Renderable || content.m_status != JianziStatus::Renderable) {
-        return MakeMissingCombination(content, '*');
+        return Result<Jianzi>::Success(MakeMissingCombination(content, '*'));
     }
     if (!m_capsule) return *this / content;
     Jianzi ret(m_context);
@@ -1006,7 +1218,10 @@ Jianzi Jianzi::operator*(const Jianzi& content) const {
     const auto segment_height = content_segments > 0 ? capsule_height / content_segments : 0.0f;
     if (top_conflict && !zero_content) tl.y += segment_height;
     if (bottom_conflict && !zero_content) br.y -= segment_height;
-    if (br.y < tl.y) throw std::runtime_error("Capsule has no vertical space after border avoidance.");
+    if (br.y < tl.y) {
+        return Result<Jianzi>::Failure(
+            {JianziErrorCode::InvalidGeometry, "Capsule has no vertical space after border avoidance."});
+    }
 
     if (!zero_content && (m_capsule->border_flags.t || tl.y > 0))
         inside.Normalize(NormalizeDirection::Top, m_context.m_layout);
@@ -1033,14 +1248,15 @@ Jianzi Jianzi::operator*(const Jianzi& content) const {
     if (tl.y == 0) ret.m_border_flags.t |= content.m_border_flags.t;
     if (std::abs(br.y - 1.0f) < FLT_EPSILON) ret.m_border_flags.b |= content.m_border_flags.b;
     ret.m_v_segments = final_segments;
-    return ret;
+    return Result<Jianzi>::Success(std::move(ret));
 }
 
-std::vector<PathData> qin::Jianzi::RenderPath() const {
-    if (!m_node) return {};
+Result<std::vector<PathData>> qin::Jianzi::RenderPath() const {
+    if (!m_node) return Result<std::vector<PathData>>::Success({});
     auto strokes = m_node->Flatten(m_context.m_layout);
     auto paths = m_context.m_renderer->Render(strokes);
-    for (auto& command : paths) {
+    if (!paths) return Result<std::vector<PathData>>::Failure(*paths.GetError());
+    for (auto& command : *paths.GetValue()) {
         for (auto& point : command.pts) {
             point.x = (point.x - m_context.m_layout.normalization_tx) /
                       m_context.m_layout.normalization_scale;
