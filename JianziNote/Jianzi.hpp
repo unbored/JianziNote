@@ -43,7 +43,7 @@ class Jianzi {
   // 将两个减字横向合并，中间多留一个笔画宽度
   //（用于给“撮”“剌”等中间有一竖的减字留空间）
   Result<Jianzi> operator|(const Jianzi &right) const;
-  // 将两个减字横向合并，但左侧只留30%
+  // 将两个减字横向合并，左侧分配33%
   Result<Jianzi> operator<(const Jianzi &right) const;
   // 将两个减字纵向合并
   Result<Jianzi> operator/(const Jianzi &below) const;
@@ -91,72 +91,12 @@ class Jianzi {
     float zero_segment_edge_width = 0.1f;
     float capsule_weight_area = 0.5f;
     float capsule_weight_base = 0.5f;
+    float aspect_limit = 1.5f;
   };
   std::string m_name;  // 减字名称
   JianziStatus m_status = JianziStatus::Empty;
   std::vector<std::string> m_missing_names;
 
-  // 归一化方向
-  enum class NormalizeDirection {
-    Top = 8,
-    Bottom = 4,
-    Left = 2,
-    Right = 1,
-  };
-
-  struct FixedInsets {
-    float t = 0;
-    float b = 0;
-    float l = 0;
-    float r = 0;
-  };
-
-  // 每个最小减字的包围框
-  struct Node {
-    Node() = default;
-    Node(const Node &other);
-    Node &operator=(const Node &other);
-    Node(Node &&other) noexcept = default;
-    Node &operator=(Node &&other) noexcept = default;
-
-    BoundingBox box;
-    std::vector<Stroke> strokes;  // 包围框内的笔画
-    struct {
-      float t = 0;
-      float b = 0;
-      float l = 0;
-      float r = 0;
-    } outer_border;  // 外部边界状态
-    std::vector<float> layer_ratios;
-
-    std::unique_ptr<Node> first;
-    std::unique_ptr<Node> second;
-
-    float Area() const;
-    float RecordLayerRatio(float before_area);
-    void PlaceBody(bool horizontal, float start, float body_size,
-                   float fixed_start = 0, float fixed_end = 0);
-    float SkeletonVerticalCenter() const;
-    void PlaceZeroSegmentCenter(float target);
-    FixedInsets Normalize(NormalizeDirection dir, const Layout &layout);
-    void ApplyTransform(const BoundingBox &transform);
-    BoundingBox TightBoundingBox(const Layout &layout) const;
-    float MaximumStrokeWidth(const Layout &layout,
-                             float inherited_weight = 1.0f) const;
-    std::vector<Stroke> Flatten(const Layout &layout) const;
-
-   private:
-    float LayerWeight(const Layout &layout) const;
-    void CollectStrokes(const Layout &layout, const BoundingBox &parent_box,
-                        float inherited_weight,
-                        std::vector<Stroke> &output) const;
-  };
-
-  // std::vector<Stroke> m_strokes; // 减字所包含的所有端点
-  std::unique_ptr<Node> m_node = nullptr;  // 节点组成减字
-
-  BorderFlags m_border_flags;  // 避让标记
-  int m_v_segments = 1;        // 纵向间隔数
 
   struct Capsule {
     Point2f tl;                // 左上角坐标
@@ -164,7 +104,39 @@ class Jianzi {
     BorderFlags border_flags;  // 避让标记
     int v_segments = 1;        // 填充区的纵向间隔数
   };
-  std::unique_ptr<Capsule> m_capsule;  // 用于填充另一减字的空间，简称填充区
+
+  // Operators retain original leaves; layout happens after the whole structure is known.
+  struct Node {
+    Node() = default;
+    Node(const Node &other);
+    Node &operator=(const Node &other);
+    Node(Node &&other) noexcept = default;
+    Node &operator=(Node &&other) noexcept = default;
+    char operation = 0;
+    std::string name;
+    BoundingBox range;
+    BorderFlags flags;
+    int segments = 1;
+    std::unique_ptr<Capsule> capsule;
+    std::vector<Stroke> strokes;
+    std::unique_ptr<Node> first;
+    std::unique_ptr<Node> second;
+  };
+
+  struct LayoutOutput {
+    std::vector<Stroke> strokes;
+    BorderFlags flags;
+    int segments = 0;
+  };
+  struct LayoutEngine {
+    static Result<LayoutOutput> Run(const Node &root, const Layout &layout, bool render = true);
+  };
+
+  // std::vector<Stroke> m_strokes; // 减字所包含的所有端点
+  std::unique_ptr<Node> m_node = nullptr;  // 节点组成减字
+
+  BorderFlags m_border_flags;  // 避让标记
+  int m_v_segments = 1;        // 纵向间隔数
 
  private:
   friend class JianziLibrary;
@@ -174,6 +146,7 @@ class Jianzi {
   Jianzi(const JianziContext &context, const char *u8_ch);
   bool HasSameContext(const Jianzi &other) const noexcept;
   Jianzi MakeMissingCombination(const Jianzi &other, char operation) const;
+  Result<Jianzi> Combine(const Jianzi &other, char operation) const;
   void CopyData(const Jianzi &other);
   void MoveData(Jianzi &&other);
 

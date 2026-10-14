@@ -1,5 +1,5 @@
 # Copyright (c) 2024 King
-# 
+#
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
@@ -16,6 +16,7 @@ add_library(${MODULE_NAME} ${PROJECT_LINK_DYNAMIC_STATIC}
     BoundingBox.cpp
     Cbor.cpp
     Jianzi.cpp
+    JianziLayout.cpp
     StrokeDescRenderer.cpp
     Utf8.cpp
 )

@@ -41,6 +41,7 @@ struct Jianzi::LibraryData {
         BorderFlags border_flags;
         int vertical_segments = 1;
         std::optional<Capsule> capsule;
+        BoundingBox range;
         std::vector<Stroke> strokes;
     };
 
@@ -181,7 +182,8 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
                 !OptionalFloat(*composition, "border_width", layout.border_width) ||
                 !OptionalFloat(*composition, "zero_segment_edge_width", layout.zero_segment_edge_width) ||
                 !OptionalFloat(*composition, "capsule_weight_area", layout.capsule_weight_area) ||
-                !OptionalFloat(*composition, "capsule_weight_base", layout.capsule_weight_base)) {
+                !OptionalFloat(*composition, "capsule_weight_base", layout.capsule_weight_base) ||
+                !OptionalFloat(*composition, "aspect_limit", layout.aspect_limit)) {
                 return LibraryError<std::unique_ptr<JianziContext>>(
                     "Library composition contains invalid values.");
             }
@@ -200,7 +202,8 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
     };
     if (!nonnegative(layout.weight_area) || !nonnegative(layout.weight_base) ||
         !nonnegative(layout.zero_segment_edge_width) || !nonnegative(layout.capsule_weight_area) ||
-        !nonnegative(layout.capsule_weight_base) || !std::isfinite(layout.border_width)) {
+        !nonnegative(layout.capsule_weight_base) || !std::isfinite(layout.border_width) ||
+        !std::isfinite(layout.aspect_limit) || layout.aspect_limit < 1) {
         return LibraryError<std::unique_ptr<JianziContext>>("Library composition contains invalid metrics.");
     }
 
@@ -222,6 +225,16 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
             !RequiredInt(source.value(), "vertical_segments", glyph.vertical_segments)) {
             return LibraryError<std::unique_ptr<JianziContext>>("Glyph metadata is invalid: " + source.key());
         }
+        if (const auto range = Member(source.value(), "range_box")) {
+            Point2f tl, br;
+            const auto top_left = Member(*range, "top_left"), bottom_right = Member(*range, "bottom_right");
+            if (!range->is_object() || !top_left || !bottom_right ||
+                !ReadPoint(*top_left, tl) || !ReadPoint(*bottom_right, br) ||
+                br.x <= tl.x || br.y <= tl.y || !std::isfinite(br.x-tl.x) || !std::isfinite(br.y-tl.y)) {
+                return LibraryError<std::unique_ptr<JianziContext>>("Glyph range_box is invalid: " + source.key());
+            }
+            glyph.range = {tl.x, tl.y, br.x-tl.x, br.y-tl.y};
+        }
         if (const auto capsule = Member(source.value(), "capsule")) {
             if (!capsule->is_object()) {
                 return LibraryError<std::unique_ptr<JianziContext>>("Glyph capsule is invalid: " + source.key());
@@ -235,6 +248,7 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
                 !ReadPoint(*top_left, compiled.tl) || !bottom_right || !ReadPoint(*bottom_right, compiled.br)) {
                 return LibraryError<std::unique_ptr<JianziContext>>("Glyph capsule is invalid: " + source.key());
             }
+            compiled.v_segments = std::max(0, compiled.v_segments);
             glyph.capsule = compiled;
         }
         const auto strokes = Member(source.value(), "strokes");
@@ -348,9 +362,13 @@ Jianzi::Jianzi(const JianziContext& context, const char* name) : m_context(conte
     const auto& glyph = found->second;
     m_border_flags = glyph.border_flags;
     m_v_segments = glyph.vertical_segments;
-    if (glyph.capsule) m_capsule = std::make_unique<Capsule>(*glyph.capsule);
     m_node = std::make_unique<Node>();
     m_node->strokes = glyph.strokes;
+    m_node->name = m_name;
+    m_node->range = glyph.range;
+    m_node->flags = glyph.border_flags;
+    m_node->segments = std::max(0, glyph.vertical_segments);
+    if (glyph.capsule) m_node->capsule = std::make_unique<Capsule>(*glyph.capsule);
     m_status = JianziStatus::Renderable;
 }
 
@@ -411,12 +429,6 @@ void Jianzi::CopyData(const Jianzi& other) {
     }
     m_border_flags = other.m_border_flags;
     m_v_segments = other.m_v_segments;
-    if (other.m_capsule) {
-        m_capsule = std::make_unique<Capsule>();
-        *m_capsule = *other.m_capsule;
-    } else {
-        m_capsule.reset();
-    }
 }
 
 void Jianzi::MoveData(Jianzi&& other) {
@@ -426,7 +438,6 @@ void Jianzi::MoveData(Jianzi&& other) {
     m_node = std::move(other.m_node);
     m_border_flags = other.m_border_flags;
     m_v_segments = other.m_v_segments;
-    m_capsule = std::move(other.m_capsule);
     other.m_status = JianziStatus::Empty;
 }
 
@@ -444,11 +455,11 @@ const std::map<char32_t, JianziOperator> c_jianzi_operators = {
 
     {U'|', {[](const Jianzi& j1, const Jianzi& j2) { return j1 | j2; }, 2}},
 
-    {U'&', {[](const Jianzi& j1, const Jianzi& j2) { return j1 & j2; }, 3}},
+    {U'&', {[](const Jianzi& j1, const Jianzi& j2) { return j1 & j2; }, 4}},
     {U'<', {[](const Jianzi& j1, const Jianzi& j2) { return j1 < j2; }, 3}},
     {U'/', {[](const Jianzi& j1, const Jianzi& j2) { return j1 / j2; }, 3}},
 
-    {U'*', {[](const Jianzi& j1, const Jianzi& j2) { return j1 * j2; }, 4}},
+    {U'*', {[](const Jianzi& j1, const Jianzi& j2) { return j1 * j2; }, 5}},
 };
 
 Result<Jianzi> JianziLibrary::Parse(const char* u8_str) const {
@@ -580,27 +591,20 @@ Result<Jianzi> JianziLibrary::Parse(const char* u8_str) const {
                 // 普通算符
 
                 const auto current = c_jianzi_operators.find(c);
-                const auto previous = operators.empty() ? c_jianzi_operators.end()
-                                                        : c_jianzi_operators.find(operators.top());
                 if (current == c_jianzi_operators.end()) {
                     return Result<Jianzi>::Failure(
                         {JianziErrorCode::InvalidFormula, "Jianzi formula contains an invalid operator."});
                 }
-                if (operators.empty() || previous == c_jianzi_operators.end() ||
-                    current->second.priority > previous->second.priority) {
-                    // 无旧运算符，或新运算符优先级更高
-                    operators.push(c);
-                } else {
-                    // 旧运算符优先级更高或平级
-                    // 先将旧运算符出栈进行运算
-                    char32_t op = operators.top();
+                while (!operators.empty() && operators.top() != U'(') {
+                    const auto previous = c_jianzi_operators.find(operators.top());
+                    if (previous == c_jianzi_operators.end() ||
+                        previous->second.priority < current->second.priority) break;
+                    const char32_t op = operators.top();
                     operators.pop();
-                    // 进行运算
                     auto calculated = Calc(op);
                     if (!calculated) return Result<Jianzi>::Failure(*calculated.GetError());
-                    // 再将新运算符入栈
-                    operators.push(c);
                 }
+                operators.push(c);
             }
             // 仅保留找到的运算符之后的字符串
             str = str.substr(sub_pos - str.begin() + 1);
@@ -634,6 +638,10 @@ Result<Jianzi> JianziLibrary::Parse(const char* u8_str) const {
             {JianziErrorCode::InvalidFormula, "Jianzi formula is missing an operator."});
     }
     result = values.top();
+    if (result.m_node) {
+        const auto checked = Jianzi::LayoutEngine::Run(*result.m_node, m_context->m_layout, false);
+        if (!checked) return Result<Jianzi>::Failure(*checked.GetError());
+    }
     return Result<Jianzi>::Success(std::move(result));
 }
 
@@ -905,356 +913,36 @@ Result<std::string> JianziLibrary::ParseNatural(const char* u8_str) const {
     return Result<std::string>::Success(std::move(ret));
 }
 
-Result<Jianzi> Jianzi::operator&(const Jianzi& right) const {
-    if (!HasSameContext(right)) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
-    }
-    if (m_status == JianziStatus::Empty || right.m_status == JianziStatus::Empty) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
-    }
-    if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
-        return Result<Jianzi>::Success(MakeMissingCombination(right, '&'));
-    }
-    Jianzi ret(m_context);
-    ret.m_name = "(" + m_name + "&" + right.m_name + ")";
-    ret.m_node = std::make_unique<Node>();
-    ret.m_status = JianziStatus::Renderable;
-    ret.m_node->first = std::make_unique<Node>(*m_node);
-    ret.m_node->second = std::make_unique<Node>(*right.m_node);
-    auto& left_node = *ret.m_node->first;
-    auto& right_node = *ret.m_node->second;
-    const auto before_left = left_node.Area();
-    const auto before_right = right_node.Area();
-    const auto fixed_left = left_node.Normalize(NormalizeDirection::Right, m_context.m_layout);
-    const auto fixed_right = right_node.Normalize(NormalizeDirection::Left, m_context.m_layout);
-    const float gap = m_border_flags.r != right.m_border_flags.l
-                          ? 0.5f
-                          : (m_border_flags.r && right.m_border_flags.l ? 1.0f : 0.25f);
-    left_node.outer_border.r = gap;
-    right_node.outer_border.l = gap;
-    const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
-    const auto left_body = available * 0.5f;
-    left_node.PlaceBody(true, 0, left_body, fixed_left.l, 0);
-    right_node.PlaceBody(true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
-    left_node.RecordLayerRatio(before_left);
-    right_node.RecordLayerRatio(before_right);
-    ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
-    ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
-    ret.m_border_flags.l = m_border_flags.l;
-    ret.m_border_flags.r = right.m_border_flags.r;
-
-    ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
-    return Result<Jianzi>::Success(std::move(ret));
+Result<Jianzi> Jianzi::Combine(const Jianzi& other, char operation) const {
+    if (!HasSameContext(other)) return Result<Jianzi>::Failure(
+        {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
+    if (m_status == JianziStatus::Empty || other.m_status == JianziStatus::Empty)
+        return Result<Jianzi>::Failure({JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
+    if (m_status != JianziStatus::Renderable || other.m_status != JianziStatus::Renderable)
+        return Result<Jianzi>::Success(MakeMissingCombination(other, operation));
+    Jianzi result(m_context);
+    result.m_name = "(" + m_name + operation + other.m_name + ")";
+    result.m_status = JianziStatus::Renderable;
+    result.m_node = std::make_unique<Node>();
+    result.m_node->operation = operation;
+    result.m_node->name = result.m_name;
+    result.m_node->first = std::make_unique<Node>(*m_node);
+    result.m_node->second = std::make_unique<Node>(*other.m_node);
+    return Result<Jianzi>::Success(std::move(result));
 }
 
-Result<Jianzi> Jianzi::operator|(const Jianzi& right) const {
-    if (!HasSameContext(right)) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
-    }
-    if (m_status == JianziStatus::Empty || right.m_status == JianziStatus::Empty) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
-    }
-    if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
-        return Result<Jianzi>::Success(MakeMissingCombination(right, '|'));
-    }
-    Jianzi ret(m_context);
-    ret.m_name = "(" + m_name + "|" + right.m_name + ")";
-    ret.m_node = std::make_unique<Node>();
-    ret.m_status = JianziStatus::Renderable;
-    ret.m_node->first = std::make_unique<Node>(*m_node);
-    ret.m_node->second = std::make_unique<Node>(*right.m_node);
-    auto& left_node = *ret.m_node->first;
-    auto& right_node = *ret.m_node->second;
-    const auto before_left = left_node.Area();
-    const auto before_right = right_node.Area();
-    const auto fixed_left = left_node.Normalize(NormalizeDirection::Right, m_context.m_layout);
-    const auto fixed_right = right_node.Normalize(NormalizeDirection::Left, m_context.m_layout);
-    left_node.outer_border.r = m_border_flags.r ? 2.0f : 1.0f;
-    right_node.outer_border.l = right.m_border_flags.l ? 2.0f : 1.0f;
-    const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
-    const auto left_body = available * 0.5f;
-    left_node.PlaceBody(true, 0, left_body, fixed_left.l, 0);
-    right_node.PlaceBody(true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
-    left_node.RecordLayerRatio(before_left);
-    right_node.RecordLayerRatio(before_right);
-    ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
-    ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
-    ret.m_border_flags.l = m_border_flags.l;
-    ret.m_border_flags.r = right.m_border_flags.r;
-
-    ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
-    return Result<Jianzi>::Success(std::move(ret));
-}
-
-Result<Jianzi> Jianzi::operator<(const Jianzi& right) const {
-    if (!HasSameContext(right)) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
-    }
-    if (m_status == JianziStatus::Empty || right.m_status == JianziStatus::Empty) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
-    }
-    if (m_status != JianziStatus::Renderable || right.m_status != JianziStatus::Renderable) {
-        return Result<Jianzi>::Success(MakeMissingCombination(right, '<'));
-    }
-    Jianzi ret(m_context);
-    ret.m_name = "(" + m_name + "<" + right.m_name + ")";
-    ret.m_node = std::make_unique<Node>();
-    ret.m_status = JianziStatus::Renderable;
-    ret.m_node->first = std::make_unique<Node>(*m_node);
-    ret.m_node->second = std::make_unique<Node>(*right.m_node);
-    auto& left_node = *ret.m_node->first;
-    auto& right_node = *ret.m_node->second;
-    const auto before_left = left_node.Area();
-    const auto before_right = right_node.Area();
-    const auto both = static_cast<NormalizeDirection>(static_cast<int>(NormalizeDirection::Left) |
-                                                       static_cast<int>(NormalizeDirection::Right));
-    const auto fixed_left = left_node.Normalize(both, m_context.m_layout);
-    const auto fixed_right = right_node.Normalize(NormalizeDirection::Left, m_context.m_layout);
-    const float gap = m_border_flags.r != right.m_border_flags.l
-                          ? 0.5f
-                          : (m_border_flags.r && right.m_border_flags.l ? 1.0f : 0.25f);
-    left_node.outer_border.r = gap;
-    right_node.outer_border.l = gap;
-    const auto available = std::max(0.0f, 1.0f - fixed_left.l - fixed_right.r);
-    const auto left_body = available * 0.3f;
-    left_node.PlaceBody(true, 0, left_body, fixed_left.l, 0);
-    right_node.PlaceBody(true, fixed_left.l + left_body, available - left_body, 0, fixed_right.r);
-    left_node.RecordLayerRatio(before_left);
-    right_node.RecordLayerRatio(before_right);
-    ret.m_border_flags.t = m_border_flags.t || right.m_border_flags.t;
-    ret.m_border_flags.b = m_border_flags.b || right.m_border_flags.b;
-    ret.m_border_flags.l = m_border_flags.l;
-    ret.m_border_flags.r = right.m_border_flags.r;
-
-    ret.m_v_segments = std::max(m_v_segments, right.m_v_segments);
-    return Result<Jianzi>::Success(std::move(ret));
-}
-
-Result<Jianzi> Jianzi::operator/(const Jianzi& below) const {
-    if (!HasSameContext(below)) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
-    }
-    if (m_status == JianziStatus::Empty || below.m_status == JianziStatus::Empty) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
-    }
-    if (m_status != JianziStatus::Renderable || below.m_status != JianziStatus::Renderable) {
-        return Result<Jianzi>::Success(MakeMissingCombination(below, '/'));
-    }
-    Jianzi ret(m_context);
-    ret.m_name = "(" + m_name + "/" + below.m_name + ")";
-    ret.m_node = std::make_unique<Node>();
-    ret.m_status = JianziStatus::Renderable;
-    ret.m_node->first = std::make_unique<Node>(*m_node);
-    ret.m_node->second = std::make_unique<Node>(*below.m_node);
-    auto& above_node = *ret.m_node->first;
-    auto& below_node = *ret.m_node->second;
-    const auto before_above = above_node.Area();
-    const auto before_below = below_node.Area();
-    const bool above_participates = m_v_segments > 0;
-    const bool below_participates = below.m_v_segments > 0;
-    int extra = 0;
-    float gap = 0.25f;
-    if (m_border_flags.b != below.m_border_flags.t) {
-        gap = 0.5f;
-    } else if (m_border_flags.b && below.m_border_flags.t) {
-        extra = 1;
-        gap = 0;
-    }
-    const int total = m_v_segments + below.m_v_segments + extra;
-    if (!above_participates && below_participates) {
-        const auto stroke_height =
-            std::min(1.0f, 2.0f * above_node.MaximumStrokeWidth(m_context.m_layout));
-        const auto edge_height =
-            std::min(m_context.m_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
-        const auto zero_height = stroke_height + edge_height;
-        const auto fixed_below = below_node.Normalize(NormalizeDirection::Top, m_context.m_layout);
-        const auto available = std::max(0.0f, 1.0f - zero_height - fixed_below.b);
-        const auto unit = available / static_cast<float>(below.m_v_segments + extra);
-        below_node.PlaceBody(false, zero_height + unit * extra, unit * below.m_v_segments, 0, fixed_below.b);
-        above_node.PlaceZeroSegmentCenter(edge_height + stroke_height * 0.5f);
-        const auto ratio = below_node.RecordLayerRatio(before_below);
-        above_node.layer_ratios.push_back(ratio);
-    } else if (above_participates && !below_participates) {
-        const auto stroke_height =
-            std::min(1.0f, 2.0f * below_node.MaximumStrokeWidth(m_context.m_layout));
-        const auto edge_height =
-            std::min(m_context.m_layout.zero_segment_edge_width, std::max(0.0f, 1.0f - stroke_height));
-        const auto zero_height = stroke_height + edge_height;
-        const auto fixed_above = above_node.Normalize(NormalizeDirection::Bottom, m_context.m_layout);
-        const auto available = std::max(0.0f, 1.0f - zero_height - fixed_above.t);
-        const auto unit = available / static_cast<float>(m_v_segments + extra);
-        above_node.PlaceBody(false, 0, unit * m_v_segments, fixed_above.t, 0);
-        below_node.PlaceZeroSegmentCenter(1.0f - edge_height - stroke_height * 0.5f);
-        const auto ratio = above_node.RecordLayerRatio(before_above);
-        below_node.layer_ratios.push_back(ratio);
-    } else if (above_participates && below_participates) {
-        const auto fixed_above = above_node.Normalize(NormalizeDirection::Bottom, m_context.m_layout);
-        const auto fixed_below = below_node.Normalize(NormalizeDirection::Top, m_context.m_layout);
-        const auto available = std::max(0.0f, 1.0f - fixed_above.t - fixed_below.b);
-        const auto unit = available / static_cast<float>(total);
-        above_node.PlaceBody(false, 0, unit * m_v_segments, fixed_above.t, 0);
-        below_node.PlaceBody(false, fixed_above.t + unit * (m_v_segments + extra),
-                             unit * below.m_v_segments, 0, fixed_below.b);
-        above_node.RecordLayerRatio(before_above);
-        below_node.RecordLayerRatio(before_below);
-    } else if (total > 0) {
-        above_node.PlaceZeroSegmentCenter(0);
-        below_node.PlaceZeroSegmentCenter(1);
-        above_node.RecordLayerRatio(before_above);
-        below_node.RecordLayerRatio(before_below);
-    } else {
-        above_node.RecordLayerRatio(before_above);
-        below_node.RecordLayerRatio(before_below);
-    }
-    above_node.outer_border.b = gap;
-    below_node.outer_border.t = gap;
-    ret.m_border_flags.t = m_border_flags.t;
-    ret.m_border_flags.b = below.m_border_flags.b;
-    ret.m_border_flags.l = m_border_flags.l || below.m_border_flags.l;
-    ret.m_border_flags.r = m_border_flags.r || below.m_border_flags.r;
-
-    ret.m_v_segments = total;
-    return Result<Jianzi>::Success(std::move(ret));
-}
-
-Result<Jianzi> Jianzi::operator^(const Jianzi& below) const {
-    if (!HasSameContext(below)) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
-    }
-    if (m_status == JianziStatus::Empty || below.m_status == JianziStatus::Empty) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
-    }
-    if (m_status != JianziStatus::Renderable || below.m_status != JianziStatus::Renderable) {
-        return Result<Jianzi>::Success(MakeMissingCombination(below, '^'));
-    }
-    Jianzi above = *this;
-    if (above.m_v_segments > 0 && below.m_v_segments > 0 && above.m_v_segments > below.m_v_segments) {
-        above.m_v_segments = below.m_v_segments;
-    } else if (above.m_v_segments > 0 && below.m_v_segments > 0 &&
-               above.m_v_segments < below.m_v_segments * 0.3f) {
-        above.m_v_segments = std::round(below.m_v_segments * 0.3f);
-    }
-    auto result = above / below;
-    if (!result) return result;
-    result.GetValue()->m_name = "(" + m_name + "^" + below.m_name + ")";
-    return result;
-}
-
-Result<Jianzi> Jianzi::operator*(const Jianzi& content) const {
-    if (!HasSameContext(content)) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::ContextMismatch, "Cannot combine Jianzi objects from different libraries."});
-    }
-    if (m_status == JianziStatus::Empty || content.m_status == JianziStatus::Empty) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::InvalidFormula, "Cannot combine an empty Jianzi."});
-    }
-    if (m_status != JianziStatus::Renderable || content.m_status != JianziStatus::Renderable) {
-        return Result<Jianzi>::Success(MakeMissingCombination(content, '*'));
-    }
-    if (!m_capsule) return *this / content;
-    Jianzi ret(m_context);
-    ret.m_name = "(" + m_name + "*" + content.m_name + ")";
-    ret.m_node = std::make_unique<Node>();
-    ret.m_status = JianziStatus::Renderable;
-    ret.m_node->first = std::make_unique<Node>(*m_node);
-    ret.m_node->second = std::make_unique<Node>(*content.m_node);
-    auto& base = *ret.m_node->first;
-    auto& inside = *ret.m_node->second;
-    const auto before_base = base.Area();
-    const auto before_inside = inside.Area();
-    const bool zero_content = content.m_v_segments == 0;
-    const bool top_conflict = m_capsule->border_flags.t && content.m_border_flags.t;
-    const bool bottom_conflict = m_capsule->border_flags.b && content.m_border_flags.b;
-    int content_segments = content.m_v_segments;
-    if (!zero_content) content_segments += static_cast<int>(top_conflict) + static_cast<int>(bottom_conflict);
-    content_segments = std::max(content_segments, m_capsule->v_segments);
-    const int final_segments = m_v_segments + content_segments - m_capsule->v_segments;
-    const float ratio = m_v_segments > 0 && final_segments > 0
-                            ? static_cast<float>(m_v_segments) / static_cast<float>(final_segments)
-                            : 1.0f;
-
-    const auto old_tl = m_capsule->tl;
-    const auto old_br = m_capsule->br;
-    auto host_box = base.TightBoundingBox(m_context.m_layout);
-    const float outer_top = std::min(old_tl.y, host_box.y);
-    const float outer_bottom = std::max(old_br.y, host_box.y + host_box.h);
-    const float envelope = outer_bottom - outer_top;
-    const auto to_unit = [&](float value) { return envelope > 1e-9f ? (value - outer_top) / envelope : 0.0f; };
-    const auto from_unit = [&](float value) { return outer_top + value * envelope; };
-    Point2f tl{old_tl.x, from_unit(to_unit(old_tl.y) * ratio)};
-    Point2f br{old_br.x, from_unit(1.0f - (1.0f - to_unit(old_br.y)) * ratio)};
-    const auto map_interval = [](float value, float from_start, float from_end, float to_start, float to_end) {
-        return std::abs(from_end - from_start) > 1e-9f
-                   ? to_start + (value - from_start) / (from_end - from_start) * (to_end - to_start)
-                   : value;
-    };
-    const auto capsule_weight =
-        m_context.m_layout.capsule_weight_area * std::sqrt(ratio) + m_context.m_layout.capsule_weight_base;
-    for (auto& stroke : base.strokes) {
-        stroke.width *= capsule_weight;
-        for (auto& vertex : stroke.vertice) {
-            if (vertex.region == VertexRegion::Top) {
-                vertex.pt.y = from_unit(to_unit(vertex.pt.y) * ratio);
-            } else if (vertex.region == VertexRegion::Bottom) {
-                vertex.pt.y = from_unit(1.0f - (1.0f - to_unit(vertex.pt.y)) * ratio);
-            } else if (vertex.region == VertexRegion::Medium) {
-                vertex.pt.y = map_interval(vertex.pt.y, old_tl.y, old_br.y, tl.y, br.y);
-            }
-        }
-    }
-
-    const auto capsule_height = std::max(0.0f, br.y - tl.y);
-    const auto segment_height = content_segments > 0 ? capsule_height / content_segments : 0.0f;
-    if (top_conflict && !zero_content) tl.y += segment_height;
-    if (bottom_conflict && !zero_content) br.y -= segment_height;
-    if (br.y < tl.y) {
-        return Result<Jianzi>::Failure(
-            {JianziErrorCode::InvalidGeometry, "Capsule has no vertical space after border avoidance."});
-    }
-
-    if (!zero_content && (m_capsule->border_flags.t || tl.y > 0))
-        inside.Normalize(NormalizeDirection::Top, m_context.m_layout);
-    if (!zero_content && (m_capsule->border_flags.b || br.y < 1))
-        inside.Normalize(NormalizeDirection::Bottom, m_context.m_layout);
-    if (m_capsule->border_flags.l || tl.x > 0) inside.Normalize(NormalizeDirection::Left, m_context.m_layout);
-    if (m_capsule->border_flags.r || br.x < 1) inside.Normalize(NormalizeDirection::Right, m_context.m_layout);
-    inside.outer_border.t = zero_content ? 0 : (m_capsule->border_flags.t ? (content.m_border_flags.t ? 0 : 1) : 0);
-    inside.outer_border.b = zero_content ? 0 : (m_capsule->border_flags.b ? (content.m_border_flags.b ? 0 : 1) : 0);
-    inside.outer_border.l = m_capsule->border_flags.l ? (content.m_border_flags.l ? 2 : 1) : 0;
-    inside.outer_border.r = m_capsule->border_flags.r ? (content.m_border_flags.r ? 2 : 1) : 0;
-    if (zero_content) {
-        inside.box = {tl.x, 0, br.x - tl.x, 1};
-        inside.PlaceZeroSegmentCenter((tl.y + br.y) * 0.5f);
-    } else {
-        inside.box = {tl.x, tl.y, br.x - tl.x, br.y - tl.y};
-    }
-    base.RecordLayerRatio(before_base);
-    inside.RecordLayerRatio(before_inside);
-
-    ret.m_border_flags = m_border_flags;
-    if (tl.x == 0) ret.m_border_flags.l |= content.m_border_flags.l;
-    if (std::abs(br.x - 1.0f) < FLT_EPSILON) ret.m_border_flags.r |= content.m_border_flags.r;
-    if (tl.y == 0) ret.m_border_flags.t |= content.m_border_flags.t;
-    if (std::abs(br.y - 1.0f) < FLT_EPSILON) ret.m_border_flags.b |= content.m_border_flags.b;
-    ret.m_v_segments = final_segments;
-    return Result<Jianzi>::Success(std::move(ret));
-}
+Result<Jianzi> Jianzi::operator&(const Jianzi& right) const { return Combine(right, '&'); }
+Result<Jianzi> Jianzi::operator|(const Jianzi& right) const { return Combine(right, '|'); }
+Result<Jianzi> Jianzi::operator<(const Jianzi& right) const { return Combine(right, '<'); }
+Result<Jianzi> Jianzi::operator/(const Jianzi& below) const { return Combine(below, '/'); }
+Result<Jianzi> Jianzi::operator^(const Jianzi& below) const { return Combine(below, '^'); }
+Result<Jianzi> Jianzi::operator*(const Jianzi& content) const { return Combine(content, '*'); }
 
 Result<std::vector<PathData>> qin::Jianzi::RenderPath() const {
     if (!m_node) return Result<std::vector<PathData>>::Success({});
-    auto strokes = m_node->Flatten(m_context.m_layout);
-    auto paths = m_context.m_renderer->Render(strokes);
+    auto layout = LayoutEngine::Run(*m_node, m_context.m_layout);
+    if (!layout) return Result<std::vector<PathData>>::Failure(*layout.GetError());
+    auto paths = m_context.m_renderer->Render(layout.GetValue()->strokes);
     if (!paths) return Result<std::vector<PathData>>::Failure(*paths.GetError());
     for (auto& command : *paths.GetValue()) {
         for (auto& point : command.pts) {
@@ -1277,219 +965,28 @@ std::string_view Jianzi::GetFallbackName() const noexcept {
 
 const std::vector<std::string>& Jianzi::GetMissingNames() const noexcept { return m_missing_names; }
 
-Jianzi::BorderFlags Jianzi::GetBorderFlags() const { return m_border_flags; }
+Jianzi::BorderFlags Jianzi::GetBorderFlags() const {
+    if (!m_node) return m_border_flags;
+    const auto layout = LayoutEngine::Run(*m_node, m_context.m_layout, false);
+    return layout ? layout.GetValue()->flags : BorderFlags{};
+}
 
-int Jianzi::GetSegments() const { return m_v_segments; }
+int Jianzi::GetSegments() const {
+    if (!m_node) return m_v_segments;
+    const auto layout = LayoutEngine::Run(*m_node, m_context.m_layout, false);
+    return layout ? layout.GetValue()->segments : 0;
+}
 
 Jianzi::Node::Node(const Node& other)
-    : box(other.box),
-      strokes(other.strokes),
-      outer_border(other.outer_border),
-      layer_ratios(other.layer_ratios) {
+    : operation(other.operation), name(other.name), range(other.range), flags(other.flags),
+      segments(other.segments), strokes(other.strokes) {
+    if (other.capsule) capsule = std::make_unique<Capsule>(*other.capsule);
     if (other.first) first = std::make_unique<Node>(*other.first);
     if (other.second) second = std::make_unique<Node>(*other.second);
 }
 
 Jianzi::Node& Jianzi::Node::operator=(const Node& other) {
-    if (this == &other) return *this;
-    Node copy(other);
-    *this = std::move(copy);
+    if (this != &other) { Node copy(other); *this = std::move(copy); }
     return *this;
 }
-
-std::vector<Stroke> Jianzi::Node::Flatten(const Layout& layout) const {
-    std::vector<Stroke> result;
-    CollectStrokes(layout, BoundingBox{}, 1.0f, result);
-    return result;
-}
-
-BoundingBox Jianzi::Node::TightBoundingBox(const Layout& layout) const {
-    auto flattened = Flatten(layout);
-
-    // 获取坐标最大最小值
-    float x_min = std::numeric_limits<float>::max(), x_max = std::numeric_limits<float>::lowest();
-    float y_min = std::numeric_limits<float>::max(), y_max = std::numeric_limits<float>::lowest();
-    bool has_point = false;
-    for (const auto& s : flattened) {
-        for (auto& v : s.vertice) {
-            has_point = true;
-            if (v.pt.x < x_min) {
-                x_min = v.pt.x;
-            }
-            if (v.pt.x > x_max) {
-                x_max = v.pt.x;
-            }
-            if (v.pt.y < y_min) {
-                y_min = v.pt.y;
-            }
-            if (v.pt.y > y_max) {
-                y_max = v.pt.y;
-            }
-        }
-    }
-
-    // 生成包围盒
-    BoundingBox box;
-    if (has_point) {
-        box.x = x_min;
-        box.y = y_min;
-        box.w = x_min < x_max ? x_max - x_min : 1.0f;
-        box.h = y_min < y_max ? y_max - y_min : 1.0f;
-    }
-
-    return box;
-}
-
-float Jianzi::Node::LayerWeight(const Layout& layout) const {
-    float result = 1.0f;
-    for (const auto ratio : layer_ratios) {
-        result *= layout.weight_area * std::sqrt(std::max(0.0f, ratio)) + layout.weight_base;
-    }
-    return result;
-}
-
-float Jianzi::Node::MaximumStrokeWidth(const Layout& layout, float inherited_weight) const {
-    const auto weight = inherited_weight * LayerWeight(layout);
-    float result = 0;
-    for (const auto& stroke : strokes) result = std::max(result, stroke.width * weight);
-    if (first) result = std::max(result, first->MaximumStrokeWidth(layout, weight));
-    if (second) result = std::max(result, second->MaximumStrokeWidth(layout, weight));
-    return result;
-}
-
-float Jianzi::Node::Area() const { return std::abs(box.w * box.h); }
-
-float Jianzi::Node::RecordLayerRatio(float before_area) {
-    const auto ratio = before_area > 1e-12f ? Area() / before_area : 1.0f;
-    layer_ratios.push_back(std::isfinite(ratio) && ratio >= 0 ? ratio : 1.0f);
-    return layer_ratios.back();
-}
-
-void Jianzi::Node::PlaceBody(bool horizontal, float start, float body_size, float fixed_start,
-                             float fixed_end) {
-    const auto source_body = std::max(1e-9f, 1.0f - fixed_start - fixed_end);
-    const auto scale = std::max(0.0f, body_size) / source_body;
-    const auto offset = start + fixed_start - scale * fixed_start;
-    if (horizontal) {
-        box.x = offset + scale * box.x;
-        box.w *= scale;
-    } else {
-        box.y = offset + scale * box.y;
-        box.h *= scale;
-    }
-}
-
-float Jianzi::Node::SkeletonVerticalCenter() const {
-    float minimum = std::numeric_limits<float>::max();
-    float maximum = std::numeric_limits<float>::lowest();
-    std::function<void(const Node&, const BoundingBox&)> collect = [&](const Node& current,
-                                                                       const BoundingBox& parent) {
-        const auto box = parent * current.box;
-        for (const auto& stroke : current.strokes) {
-            for (const auto& vertex : stroke.vertice) {
-                const auto point = box * vertex.pt;
-                minimum = std::min(minimum, point.y);
-                maximum = std::max(maximum, point.y);
-            }
-        }
-        if (current.first) collect(*current.first, box);
-        if (current.second) collect(*current.second, box);
-    };
-    collect(*this, BoundingBox{});
-    return minimum <= maximum ? (minimum + maximum) * 0.5f : 0.5f;
-}
-
-void Jianzi::Node::PlaceZeroSegmentCenter(float target) {
-    box.y += target - SkeletonVerticalCenter();
-}
-
-void Jianzi::Node::CollectStrokes(const Layout& layout, const BoundingBox& parent_box,
-                                  float inherited_weight, std::vector<Stroke>& output) const {
-    BoundingBox transformed = parent_box * box;
-    const auto weight = inherited_weight * LayerWeight(layout);
-    transformed.x += outer_border.l * layout.border_width * weight;
-    transformed.y += outer_border.t * layout.border_width * weight;
-    transformed.w -= (outer_border.l + outer_border.r) * layout.border_width * weight;
-    transformed.h -= (outer_border.t + outer_border.b) * layout.border_width * weight;
-    for (const auto& s : strokes) {
-        Stroke ns = s;
-        ns.width *= weight;
-        for (auto& v : ns.vertice) {
-            v.pt = transformed * v.pt;
-        }
-        output.push_back(std::move(ns));
-    }
-    if (first) first->CollectStrokes(layout, transformed, weight, output);
-    if (second) second->CollectStrokes(layout, transformed, weight, output);
-}
-
-Jianzi::FixedInsets Jianzi::Node::Normalize(NormalizeDirection dir, const Layout& layout) {
-    auto tight_box = TightBoundingBox(layout);
-    float xa = tight_box.x;
-    float xb = tight_box.x + tight_box.w;
-    float ya = tight_box.y;
-    float yb = tight_box.y + tight_box.h;
-
-    const auto directions = static_cast<int>(dir);
-    const bool top = directions & static_cast<int>(NormalizeDirection::Top);
-    const bool bottom = directions & static_cast<int>(NormalizeDirection::Bottom);
-    const bool left = directions & static_cast<int>(NormalizeDirection::Left);
-    const bool right = directions & static_cast<int>(NormalizeDirection::Right);
-    const bool both_x = left && right;
-    const bool both_y = top && bottom;
-    FixedInsets fixed;
-    if (bottom && !both_y) fixed.t = std::max(0.0f, ya);
-    if (top && !both_y) fixed.b = std::max(0.0f, 1.0f - yb);
-    if (right && !both_x) fixed.l = std::max(0.0f, xa);
-    if (left && !both_x) fixed.r = std::max(0.0f, 1.0f - xb);
-    BoundingBox norm_box;
-    if (top && yb - ya > 1e-9f) {
-        BoundingBox box;
-        // 向上归一化：h*ya+y=0, h*yb+y=yb
-        box.h = yb / (yb - ya);
-        box.y = -box.h * ya;
-
-        norm_box = norm_box * box;
-    }
-    if (bottom && yb - ya > 1e-9f) {
-        BoundingBox box;
-        // 向下归一化：h*ya+y=ya, h*yb+y=1
-        box.h = (1.0f - ya) / (yb - ya);
-        box.y = 1.0f - box.h * yb;
-
-        norm_box = norm_box * box;
-    }
-    if (left && xb - xa > 1e-9f) {
-        BoundingBox box;
-        // 向上归一化：w*xa+x=0, w*xb+x=xb
-        box.w = xb / (xb - xa);
-        box.x = -box.w * xa;
-
-        norm_box = norm_box * box;
-    }
-    if (right && xb - xa > 1e-9f) {
-        BoundingBox box;
-        // 向下归一化：w*xa+x=xa, w*xb+x=1
-        box.w = (1.0f - xa) / (xb - xa);
-        box.x = 1.0f - box.w * xb;
-
-        norm_box = norm_box * box;
-    }
-
-    ApplyTransform(norm_box);
-    return fixed;
-}
-
-void Jianzi::Node::ApplyTransform(const BoundingBox& transform) {
-    for (auto& s : strokes) {
-        // 笔画缩放
-        for (auto& v : s.vertice) {
-            v.pt = transform * v.pt;
-        }
-    }
-
-    if (first) first->box = transform * first->box;
-    if (second) second->box = transform * second->box;
-}
-
 }  // namespace qin
