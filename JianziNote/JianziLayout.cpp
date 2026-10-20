@@ -24,6 +24,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             Item *first = nullptr, *second = nullptr;
             std::array<std::vector<Item*>, 4> faces;
             Bounds original;
+            BorderFlags flags;
             Sides reserved{}, coefficients{}, outer{}, margins{};
             bool active_x = false, active_y = false;
             int base = 0, effective = 0, base_tree = -1, extra = 0, above = 0;
@@ -54,6 +55,16 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
         static bool Horizontal(char op) { return op == '&' || op == '|' || op == '<'; }
         static bool Flag(const BorderFlags& f, int side) {
             return side == T ? f.t : side == B ? f.b : side == L ? f.l : f.r;
+        }
+        static void SetFlag(BorderFlags& f, int side) {
+            if (side == T)
+                f.t = true;
+            else if (side == B)
+                f.b = true;
+            else if (side == L)
+                f.l = true;
+            else
+                f.r = true;
         }
         static void Add(std::vector<Item*>& into, const std::vector<Item*>& from) {
             for (auto* leaf : from)
@@ -87,6 +98,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             item->source = &source;
             item->op = source.operation;
             if (!item->op) {
+                item->flags = source.flags;
                 item->original = Envelope(source.strokes, source.capsule.get());
                 const auto& b = item->original.box;
                 const auto& f = source.range;
@@ -115,7 +127,10 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                                                      a->original.empty || cap.br.x >= box.x + box.w - 1e-7f};
                 for (int side = 0; side < 4; ++side) {
                     item->faces[side] = a->faces[side];
-                    if (exposed[side]) Add(item->faces[side], b->faces[side]);
+                    // The host represents the filled capsule in external relations.
+                    if (exposed[side])
+                        for (const auto* leaf : b->faces[side])
+                            if (Flag(leaf->flags, side)) SetFlag(a->flags, side);
                     relations.push_back(
                         {item, side, side, {a}, b->faces[side], true, false, Flag(cap.border_flags, side)});
                 }
@@ -256,6 +271,37 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 for (auto* a : relation.first)
                     for (auto* b : relation.second)
                         if (relation.capsule || Overlap(*a, *b, relation.horizontal)) pairs.push_back({a, b});
+                // Only marked conflicts form the graph used for the unsupported
+                // many-to-many check. Ordinary contacts still determine distance
+                // avoidance and which side of a one-to-many relation owns a gap.
+                if (!relation.capsule) {
+                    std::vector<Pair> conflicts;
+                    for (const auto& pair : pairs)
+                        if (Flag(pair.a->flags, relation.side_a) && Flag(pair.b->flags, relation.side_b))
+                            conflicts.push_back(pair);
+                    for (size_t seed = 0; seed < conflicts.size(); ++seed)
+                        if (!conflicts[seed].used) {
+                            std::vector<Item*> as{conflicts[seed].a}, bs{conflicts[seed].b};
+                            conflicts[seed].used = true;
+                            bool changed = true;
+                            while (changed) {
+                                changed = false;
+                                for (auto& pair : conflicts)
+                                    if (!pair.used && (std::find(as.begin(), as.end(), pair.a) != as.end() ||
+                                                       std::find(bs.begin(), bs.end(), pair.b) != bs.end())) {
+                                        Add(as, {pair.a});
+                                        Add(bs, {pair.b});
+                                        pair.used = true;
+                                        changed = true;
+                                    }
+                            }
+                            if (as.size() > 1 && bs.size() > 1) {
+                                error = "Connected many-to-many border avoidance is not supported: " +
+                                        relation.node->source->name;
+                                return false;
+                            }
+                        }
+                }
                 for (size_t seed = 0; seed < pairs.size(); ++seed)
                     if (!pairs[seed].used) {
                         std::vector<Item*> as{pairs[seed].a}, bs{pairs[seed].b};
@@ -291,13 +337,8 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                                 b.active_x = true;
                             else
                                 b.active_y = true;
-                            const bool fa = relation.capsule ? relation.wall : Flag(a.source->flags, relation.side_a),
-                                       fb = Flag(b.source->flags, relation.side_b), conflict = fa && fb;
-                            if (!relation.capsule && as.size() > 1 && bs.size() > 1 && conflict) {
-                                error = "Connected many-to-many border avoidance is not supported: " +
-                                        relation.node->source->name;
-                                return false;
-                            }
+                            const bool fa = relation.capsule ? relation.wall : Flag(a.flags, relation.side_a),
+                                       fb = Flag(b.flags, relation.side_b), conflict = fa && fb;
                             if (conflict && !relation.horizontal && (relation.side_b == T || relation.side_b == B)) {
                                 auto& owner = relation.capsule || bs.size() > 1 ? b : a;
                                 owner.reserved[&owner == &b ? relation.side_b : relation.side_a] = 1;
@@ -472,7 +513,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             output.segments = root->effective;
             std::array<bool, 4> flags{};
             for (int side = 0; side < 4; ++side)
-                for (auto* leaf : root->faces[side]) flags[side] = flags[side] || Flag(leaf->source->flags, side);
+                for (auto* leaf : root->faces[side]) flags[side] = flags[side] || Flag(leaf->flags, side);
             output.flags = {flags[T], flags[B], flags[L], flags[R]};
             if (render) {
                 Distribute(*root, {});
