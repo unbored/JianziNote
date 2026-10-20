@@ -33,7 +33,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             Bounds original;
             BorderFlags flags;
             Sides reserved{}, coefficients{}, outer{}, margins{};
-            Sides inherited_outer{}, exterior_credit{}, exterior_boundary{};
+            Sides inherited_outer{}, exterior_credit{};
             bool active_x = false, active_y = false;
             int base = 0, effective = 0, base_tree = -1, extra = 0, above = 0;
             float max_width = 0;
@@ -670,20 +670,17 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                     const float before = Area(item.second->allocation);
                     auto ratios = item.second->ratios;
                     ratios.push_back(before > Epsilon() ? Area(box) / before : 1);
-                    const auto& range = host.source->range;
-                    const auto start = host.transform * Point2f{range.x, range.y},
-                               end = host.transform * Point2f{range.x + range.w, range.y + range.h};
-                    const Sides edges{start.y, end.y, start.x, end.x}, cap_edges{tl.y, br.y, tl.x, br.x};
+                    // Include host placement/centering whitespace, not just the
+                    // distance inside its transformed original range frame.
+                    const Sides edges{0, 1, 0, 1}, cap_edges{tl.y, br.y, tl.x, br.x};
                     const auto exposed = CapsuleExposed(host);
                     for (int side = 0; side < 4; ++side)
                         if (host.outer[side] && exposed[side]) {
-                            const float boundary =
-                                host.inherited_outer[side] ? host.exterior_boundary[side] : edges[side];
+                            const float boundary = edges[side];
                             const float credit = std::max(
                                 0.0f, side == T || side == L ? cap_edges[side] - boundary : boundary - cap_edges[side]);
                             for (auto* leaf : item.second->faces[side]) {
                                 leaf->exterior_credit[side] = credit;
-                                leaf->exterior_boundary[side] = boundary;
                             }
                         }
                     Distribute(*item.second, box, ratios);
