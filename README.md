@@ -32,7 +32,7 @@ JianziNote 项目内部默认使用左上角为 (0,0)、右下角为 (1,1) 的�
 - `layout.composition.aspect_limit` 控制累计横纵变形比例，默认 `1.5`，必须大于等于 `1`。受限轴围绕原始范围框中心缩小，并满足留白及新增 segment 的空间约束。
 - capsule host 只接受外部组合带来的缩放，不因填充而再次整体缩放；扩容时 Top/Bottom 各区域统一绕联合包络上下沿变换，避免横画端点单独固定导致倾斜反转。位于 host 联合包络最外围的 capsule 边可向外传递内容边界。
 - 填好 capsule 的构件对外只以 host 身份参加避让，暴露侧内容标记合并到 host，内部单字不重复参加外部退让；capsule 内部墙面退让仍保留。多对多检测只看双方都有标记的冲突连通图，不把普通接触误算成多对多。
-- host 某方向属于最终外围且 capsule 达到该方向联合包络最外缘时，内容继承对应方向的外围留白状态；嵌套 capsule 同样处理，不要求 capsule 坐标为 0/1，也不新增内容的外部避让关系。
+- host 某方向属于最终外围且 capsule 达到该方向联合包络最外缘时，内容继承对应方向的外围留白状态；内部只保留 `max(0, 自身留白要求 - capsule 到主字范围边界的已有距离)`。已有距离按实际 host/capsule 变换计算，嵌套时沿用外围参考边界，避免重复抵扣；不要求 capsule 坐标为 0/1，也不新增内容的外部避让关系。
 - 下避让 `border_flags.bottom` 支持 `false`（无）、`true`（分段，旧值不变）、`"distance"`（距离）。与另一方上标记冲突时，距离模式不增加 segment，只在上字下侧要求 `2 × border_width × weight`，抵扣已有空白，且不让下字再次退让。capsule 继承或内部 bottom 冲突同时出现分段和距离时以分段优先；内部距离冲突同样使用两倍基准。`GetBorderFlags()` 的 `b` 保持 bool，`bottom_mode` 为 `Jianzi::BottomAvoidance::Segment/Distance`。
 - weight 保留分层面积计算；共同段高的纵向分配按内容 segment 比例计权，再用实际骨架缩放面积修正，避免空段由谁承担改变相同内容槽的笔画粗细。距离预算随 weight 最多迭代 32 次，C++ float 的收敛阈值为 `1e-7`；单次最终距离扣减不再次反馈 weight。含零 segment 的连接区域暂保留特殊布局，纵向使用 `2 × width` 空间及外围边距，并继承另一侧的纵向缩放权重。
 

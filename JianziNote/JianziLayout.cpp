@@ -33,6 +33,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             Bounds original;
             BorderFlags flags;
             Sides reserved{}, coefficients{}, outer{}, margins{};
+            Sides inherited_outer{}, exterior_credit{}, exterior_boundary{};
             bool active_x = false, active_y = false;
             int base = 0, effective = 0, base_tree = -1, extra = 0, above = 0;
             float max_width = 0;
@@ -118,7 +119,10 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 const auto exposed = CapsuleExposed(*item.first);
                 for (int side = 0; side < 4; ++side)
                     if (item.first->outer[side] && exposed[side])
-                        for (auto* leaf : item.second->faces[side]) leaf->outer[side] = 1;
+                        for (auto* leaf : item.second->faces[side]) {
+                            leaf->outer[side] = 1;
+                            leaf->inherited_outer[side] = 1;
+                        }
             }
             InheritCapsuleExterior(*item.first);
             InheritCapsuleExterior(*item.second);
@@ -252,10 +256,11 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             for (auto* leaf : atoms) {
                 const auto& m = leaf->margins;
                 const float minimum = std::min(m[T], m[B]);
-                leaf->padding = {leaf->outer[T] ? (leaf->active_y ? minimum : m[T]) : 0,
-                                 leaf->outer[B] ? (leaf->active_y ? minimum : m[B]) : 0,
-                                 std::max(0.0f, leaf->coefficients[T] * config.border_width * leaf->layout_weight),
-                                 std::max(0.0f, leaf->coefficients[B] * config.border_width * leaf->layout_weight)};
+                leaf->padding = {
+                    leaf->outer[T] ? std::max(0.0f, (leaf->active_y ? minimum : m[T]) - leaf->exterior_credit[T]) : 0,
+                    leaf->outer[B] ? std::max(0.0f, (leaf->active_y ? minimum : m[B]) - leaf->exterior_credit[B]) : 0,
+                    std::max(0.0f, leaf->coefficients[T] * config.border_width * leaf->layout_weight),
+                    std::max(0.0f, leaf->coefficients[B] * config.border_width * leaf->layout_weight)};
             }
             if (RequiredHeight(item, 0, item.effective) > box.h + Epsilon()) return std::nullopt;
             float low = 0, high = box.h / std::max(1, item.effective);
@@ -511,21 +516,23 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             const bool nx = leaf.active_x && !preserve, ny = leaf.active_y && !preserve, zero = leaf.base == 0;
             if (nx) margin[L] = margin[R] = std::min(margin[L], margin[R]);
             if (ny && !zero) margin[T] = margin[B] = std::min(margin[T], margin[B]);
+            const auto remaining = [&](int side) { return std::max(0.0f, margin[side] - leaf.exterior_credit[side]); };
             auto normalization_frame = range;
             if (nx) {
-                const float left = leaf.outer[L] ? 0 : margin[L], right = leaf.outer[R] ? 0 : margin[R];
+                const float left = leaf.outer[L] && !leaf.inherited_outer[L] ? 0 : margin[L],
+                            right = leaf.outer[R] && !leaf.inherited_outer[R] ? 0 : margin[R];
                 if (range.w - left - right > Epsilon()) {
                     normalization_frame.x += left;
                     normalization_frame.w -= left + right;
                 }
             }
             if (ny && !zero) {
-                const float top = planned         ? margin[T]
-                                  : leaf.outer[T] ? 0
-                                                  : margin[T],
-                            bottom = planned         ? margin[B]
-                                     : leaf.outer[B] ? 0
-                                                     : margin[B];
+                const float top = planned || leaf.inherited_outer[T] ? margin[T]
+                                  : leaf.outer[T]                    ? 0
+                                                                     : margin[T],
+                            bottom = planned || leaf.inherited_outer[B] ? margin[B]
+                                     : leaf.outer[B]                    ? 0
+                                                                        : margin[B];
                 if (range.h - top - bottom > Epsilon()) {
                     normalization_frame.y += top;
                     normalization_frame.h -= top + bottom;
@@ -539,20 +546,24 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                              (planned ? pad.top + std::max(0.0f, pad.distance_top - leaf.reserved[T] * unit) : 0),
                         cb = box.y + box.h - leaf.reserved[B] * unit -
                              (planned ? pad.bottom + std::max(0.0f, pad.distance_bottom - leaf.reserved[B] * unit) : 0);
-            const float x1 = preserve        ? original.x
-                             : leaf.outer[L] ? std::max(box.x, margin[L])
-                                             : box.x,
-                        x2 = preserve        ? original.x + original.w
-                             : leaf.outer[R] ? std::min(box.x + box.w, 1 - margin[R])
-                                             : box.x + box.w;
-            const float y1 = preserve        ? original.y
-                             : planned       ? ct
-                             : leaf.outer[T] ? std::max(ct, margin[T])
-                                             : ct,
-                        y2 = preserve        ? original.y + original.h
-                             : planned       ? cb
-                             : leaf.outer[B] ? std::min(cb, 1 - margin[B])
-                                             : cb;
+            const float x1 = preserve                  ? original.x
+                             : leaf.inherited_outer[L] ? box.x + remaining(L)
+                             : leaf.outer[L]           ? std::max(box.x, margin[L])
+                                                       : box.x,
+                        x2 = preserve                  ? original.x + original.w
+                             : leaf.inherited_outer[R] ? box.x + box.w - remaining(R)
+                             : leaf.outer[R]           ? std::min(box.x + box.w, 1 - margin[R])
+                                                       : box.x + box.w;
+            const float y1 = preserve                  ? original.y
+                             : planned                 ? ct
+                             : leaf.inherited_outer[T] ? ct + remaining(T)
+                             : leaf.outer[T]           ? std::max(ct, margin[T])
+                                                       : ct,
+                        y2 = preserve                  ? original.y + original.h
+                             : planned                 ? cb
+                             : leaf.inherited_outer[B] ? cb - remaining(B)
+                             : leaf.outer[B]           ? std::min(cb, 1 - margin[B])
+                                                       : cb;
             const float aw = std::max(0.0f, x2 - x1), ah = std::max(0.0f, y2 - y1);
             float sx = preserve ? 1 : box.w / normalization_frame.w, sy = preserve ? 1
                                                                           : ny && !zero
@@ -659,6 +670,22 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                     const float before = Area(item.second->allocation);
                     auto ratios = item.second->ratios;
                     ratios.push_back(before > Epsilon() ? Area(box) / before : 1);
+                    const auto& range = host.source->range;
+                    const auto start = host.transform * Point2f{range.x, range.y},
+                               end = host.transform * Point2f{range.x + range.w, range.y + range.h};
+                    const Sides edges{start.y, end.y, start.x, end.x}, cap_edges{tl.y, br.y, tl.x, br.x};
+                    const auto exposed = CapsuleExposed(host);
+                    for (int side = 0; side < 4; ++side)
+                        if (host.outer[side] && exposed[side]) {
+                            const float boundary =
+                                host.inherited_outer[side] ? host.exterior_boundary[side] : edges[side];
+                            const float credit = std::max(
+                                0.0f, side == T || side == L ? cap_edges[side] - boundary : boundary - cap_edges[side]);
+                            for (auto* leaf : item.second->faces[side]) {
+                                leaf->exterior_credit[side] = credit;
+                                leaf->exterior_boundary[side] = boundary;
+                            }
+                        }
                     Distribute(*item.second, box, ratios);
                     Place(*item.second);
                 }
