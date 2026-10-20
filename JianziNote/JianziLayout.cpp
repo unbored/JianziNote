@@ -18,6 +18,13 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             BoundingBox box;
             bool empty = true;
         };
+        struct Padding {
+            float top = 0, bottom = 0, distance_top = 0, distance_bottom = 0;
+        };
+        struct VerticalPlan {
+            float unit = 0;
+            int segments = 0;
+        };
         struct Item {
             const Node* source = nullptr;
             char op = 0;
@@ -35,6 +42,9 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             std::optional<Capsule> adjusted_capsule;
             float capsule_ratio = 1;
             bool capsule_adjusted = false, fitted = false;
+            Padding padding;
+            std::optional<VerticalPlan> vertical_slot;
+            float layout_weight = 1, weight = 1;
         };
         struct Relation {
             Item* node;
@@ -94,6 +104,25 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
         float Weight(float ratio) const {
             return config.weight_area * std::sqrt(std::max(0.0f, ratio)) + config.weight_base;
         }
+        static std::array<bool, 4> CapsuleExposed(const Item& host) {
+            const auto& cap = *host.source->capsule;
+            const auto& box = host.original.box;
+            return {host.original.empty || cap.tl.y <= box.y + 1e-7f,
+                    host.original.empty || cap.br.y >= box.y + box.h - 1e-7f,
+                    host.original.empty || cap.tl.x <= box.x + 1e-7f,
+                    host.original.empty || cap.br.x >= box.x + box.w - 1e-7f};
+        }
+        void InheritCapsuleExterior(Item& item) {
+            if (!item.op) return;
+            if (item.op == '*') {
+                const auto exposed = CapsuleExposed(*item.first);
+                for (int side = 0; side < 4; ++side)
+                    if (item.first->outer[side] && exposed[side])
+                        for (auto* leaf : item.second->faces[side]) leaf->outer[side] = 1;
+            }
+            InheritCapsuleExterior(*item.first);
+            InheritCapsuleExterior(*item.second);
+        }
         Item* Build(const Node& source) {
             items.push_back(std::make_unique<Item>());
             auto* item = items.back().get();
@@ -122,11 +151,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                     return item;
                 }
                 const auto& cap = *a->source->capsule;
-                const auto& box = a->original.box;
-                const std::array<bool, 4> exposed = {a->original.empty || cap.tl.y <= box.y + 1e-7f,
-                                                     a->original.empty || cap.br.y >= box.y + box.h - 1e-7f,
-                                                     a->original.empty || cap.tl.x <= box.x + 1e-7f,
-                                                     a->original.empty || cap.br.x >= box.x + box.w - 1e-7f};
+                const auto exposed = CapsuleExposed(*a);
                 for (int side = 0; side < 4; ++side) {
                     item->faces[side] = a->faces[side];
                     // The host represents the filled capsule in external relations.
@@ -191,23 +216,95 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             item.extra = std::max(0, item.effective - item.base_tree);
             return item.effective;
         }
-        void Distribute(Item& item, BoundingBox box, const std::vector<float>& ratios = {}, bool provisional = false) {
+        void CollectAtoms(Item& item, std::vector<Item*>& atoms) {
+            if (!item.op || item.op == '*') {
+                atoms.push_back(item.op ? item.first : &item);
+                return;
+            }
+            CollectAtoms(*item.first, atoms);
+            CollectAtoms(*item.second, atoms);
+        }
+        float RequiredHeight(const Item& item, float unit, int segments) const {
+            if (!item.op || item.op == '*') {
+                const auto& leaf = item.op ? *item.first : item;
+                const auto& p = leaf.padding;
+                return segments * unit + p.top + p.bottom + std::max(0.0f, p.distance_top - leaf.reserved[T] * unit) +
+                       std::max(0.0f, p.distance_bottom - leaf.reserved[B] * unit);
+            }
+            const auto& a = *item.first;
+            const auto& b = *item.second;
+            if (Horizontal(item.op))
+                return std::max(RequiredHeight(a, unit, segments), RequiredHeight(b, unit, segments));
+            unit *= item.effective > 0 ? static_cast<float>(segments) / item.effective : 1;
+            const float ratio = a.effective > 0 ? static_cast<float>(item.above) / a.effective : 1;
+            return RequiredHeight(a, unit * ratio, a.effective) + RequiredHeight(b, unit, b.effective);
+        }
+        std::optional<VerticalPlan> MakeVerticalPlan(Item& item, const BoundingBox& box) {
+            if (item.op == '*') return std::nullopt;
+            std::vector<Item*> atoms;
+            CollectAtoms(item, atoms);
+            bool active = false;
+            for (const auto* leaf : atoms) {
+                if (!leaf->base) return std::nullopt;
+                active |= leaf->active_y;
+            }
+            if (!active) return std::nullopt;
+            for (auto* leaf : atoms) {
+                const auto& m = leaf->margins;
+                const float minimum = std::min(m[T], m[B]);
+                leaf->padding = {leaf->outer[T] ? (leaf->active_y ? minimum : m[T]) : 0,
+                                 leaf->outer[B] ? (leaf->active_y ? minimum : m[B]) : 0,
+                                 std::max(0.0f, leaf->coefficients[T] * config.border_width * leaf->layout_weight),
+                                 std::max(0.0f, leaf->coefficients[B] * config.border_width * leaf->layout_weight)};
+            }
+            if (RequiredHeight(item, 0, item.effective) > box.h + Epsilon()) return std::nullopt;
+            float low = 0, high = box.h / std::max(1, item.effective);
+            for (int i = 0; i < 48; ++i) {
+                const float middle = (low + high) / 2;
+                if (RequiredHeight(item, middle, item.effective) <= box.h)
+                    low = middle;
+                else
+                    high = middle;
+            }
+            return VerticalPlan{low, item.effective};
+        }
+        void Distribute(Item& item, BoundingBox box, const std::vector<float>& ratios = {}, bool provisional = false,
+                        std::optional<VerticalPlan> plan = std::nullopt) {
+            if (!provisional && !plan && item.op) plan = MakeVerticalPlan(item, box);
+            const int layout_segments = plan ? plan->segments : item.effective;
+            if (plan) {
+                const float height = RequiredHeight(item, plan->unit, layout_segments);
+                box.y += std::max(0.0f, box.h - height) / 2;
+                box.h = std::min(box.h, height);
+            }
             item.allocation = box;
             item.ratios = ratios;
-            if (!item.op) return;
+            if (!item.op) {
+                item.vertical_slot = plan;
+                return;
+            }
             auto& a = *item.first;
             auto& b = *item.second;
-            const auto descend = [&](Item& child, BoundingBox target, std::optional<float> ratio = std::nullopt) {
+            const auto descend = [&](Item& child, BoundingBox target, std::optional<float> ratio = std::nullopt,
+                                     std::optional<VerticalPlan> child_plan = std::nullopt, bool independent = false) {
                 auto next = ratios;
                 next.push_back(ratio.value_or(Area(box) > Epsilon() ? Area(target) / Area(box) : 1));
-                Distribute(child, target, next, provisional);
+                Distribute(child, target, next, provisional,
+                           independent  ? std::nullopt
+                           : child_plan ? child_plan
+                                        : plan);
             };
             if (Horizontal(item.op)) {
                 const float split = item.op == '<' ? .33f : .5f;
                 descend(a, {box.x, box.y, box.w * split, box.h});
                 descend(b, {box.x + box.w * split, box.y, box.w * (1 - split), box.h});
             } else if (item.op == '*') {
-                Distribute(a, box, ratios, provisional);
+                if (plan) {
+                    a.allocation = box;
+                    a.ratios = ratios;
+                    a.vertical_slot = plan;
+                } else
+                    Distribute(a, box, ratios, provisional);
                 const auto& cap = *a.source->capsule;
                 const float ratio =
                     a.effective > 0 && item.effective > 0 ? static_cast<float>(a.effective) / item.effective : 1;
@@ -235,7 +332,8 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 const auto& f = a.source->range;
                 const Point2f start = box * Point2f{(adjusted.tl.x - f.x) / f.w, (adjusted.tl.y - f.y) / f.h},
                               end = box * Point2f{(adjusted.br.x - f.x) / f.w, (adjusted.br.y - f.y) / f.h};
-                descend(b, {start.x, start.y, std::max(0.0f, end.x - start.x), std::max(0.0f, end.y - start.y)});
+                descend(b, {start.x, start.y, std::max(0.0f, end.x - start.x), std::max(0.0f, end.y - start.y)},
+                        std::nullopt, std::nullopt, true);
             } else if (a.base_tree == 0 || b.base_tree == 0) {
                 auto& zero = a.base_tree == 0 ? a : b;
                 auto& other = &zero == &a ? b : a;
@@ -257,6 +355,18 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 const float gap = remaining - other_height, ratio = box.h > Epsilon() ? other_height / box.h : 1;
                 descend(zero, {box.x, &zero == &a ? box.y : box.y + other_height + gap, box.w, height}, ratio);
                 descend(other, {box.x, &zero == &a ? box.y + height + gap : box.y, box.w, other_height}, ratio);
+            } else if (plan) {
+                const float stretch = item.effective > 0 ? static_cast<float>(layout_segments) / item.effective : 1,
+                            factor = a.effective > 0 ? static_cast<float>(item.above) / a.effective : 1;
+                const VerticalPlan upper{plan->unit * stretch * factor, a.effective},
+                    lower{plan->unit * stretch, b.effective};
+                const float ha = RequiredHeight(a, upper.unit, a.effective),
+                            hb = RequiredHeight(b, lower.unit, b.effective);
+                const int base_a = item.op == '^' ? std::max(0, item.above - a.extra) : a.base_tree;
+                const auto total_base = static_cast<std::int64_t>(base_a) + b.base_tree;
+                const float ratio = total_base > 0 ? static_cast<float>(base_a) / total_base : .5f;
+                descend(a, {box.x, box.y, box.w, ha}, ratio, upper);
+                descend(b, {box.x, box.y + ha, box.w, hb}, 1 - ratio, lower);
             } else {
                 const auto total = static_cast<std::int64_t>(item.above) + b.effective;
                 const float split = total > 0 ? static_cast<float>(item.above) / total : .5f;
@@ -396,10 +506,39 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             const auto& original = leaf.original.box;
             const auto& box = leaf.allocation;
             const auto& range = leaf.source->range;
-            const auto margin = root->op && !preserve ? leaf.margins : Sides{};
+            const bool planned = !preserve && leaf.vertical_slot.has_value();
+            auto margin = root->op && !preserve ? leaf.margins : Sides{};
             const bool nx = leaf.active_x && !preserve, ny = leaf.active_y && !preserve, zero = leaf.base == 0;
-            const float unit = !zero && leaf.effective > 0 ? box.h / leaf.effective : 0,
-                        ct = box.y + leaf.reserved[T] * unit, cb = box.y + box.h - leaf.reserved[B] * unit;
+            if (nx) margin[L] = margin[R] = std::min(margin[L], margin[R]);
+            if (ny && !zero) margin[T] = margin[B] = std::min(margin[T], margin[B]);
+            auto normalization_frame = range;
+            if (nx) {
+                const float left = leaf.outer[L] ? 0 : margin[L], right = leaf.outer[R] ? 0 : margin[R];
+                if (range.w - left - right > Epsilon()) {
+                    normalization_frame.x += left;
+                    normalization_frame.w -= left + right;
+                }
+            }
+            if (ny && !zero) {
+                const float top = planned         ? margin[T]
+                                  : leaf.outer[T] ? 0
+                                                  : margin[T],
+                            bottom = planned         ? margin[B]
+                                     : leaf.outer[B] ? 0
+                                                     : margin[B];
+                if (range.h - top - bottom > Epsilon()) {
+                    normalization_frame.y += top;
+                    normalization_frame.h -= top + bottom;
+                }
+            }
+            const auto& pad = leaf.padding;
+            const float unit = planned                       ? leaf.vertical_slot->unit
+                               : !zero && leaf.effective > 0 ? box.h / leaf.effective
+                                                             : 0,
+                        ct = box.y + leaf.reserved[T] * unit +
+                             (planned ? pad.top + std::max(0.0f, pad.distance_top - leaf.reserved[T] * unit) : 0),
+                        cb = box.y + box.h - leaf.reserved[B] * unit -
+                             (planned ? pad.bottom + std::max(0.0f, pad.distance_bottom - leaf.reserved[B] * unit) : 0);
             const float x1 = preserve        ? original.x
                              : leaf.outer[L] ? std::max(box.x, margin[L])
                                              : box.x,
@@ -407,19 +546,19 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                              : leaf.outer[R] ? std::min(box.x + box.w, 1 - margin[R])
                                              : box.x + box.w;
             const float y1 = preserve        ? original.y
+                             : planned       ? ct
                              : leaf.outer[T] ? std::max(ct, margin[T])
                                              : ct,
                         y2 = preserve        ? original.y + original.h
+                             : planned       ? cb
                              : leaf.outer[B] ? std::min(cb, 1 - margin[B])
                                              : cb;
             const float aw = std::max(0.0f, x2 - x1), ah = std::max(0.0f, y2 - y1);
-            float sx = preserve                  ? 1
-                       : nx && raw.w > Epsilon() ? aw / raw.w
-                                                 : box.w / range.w,
-                  sy = preserve                  ? 1
-                       : ny && raw.h > Epsilon() ? ah / raw.h
-                                                 : box.h / range.h;
-            bool cx = nx, cy = ny || zero, ax = false, ay = false;
+            float sx = preserve ? 1 : box.w / normalization_frame.w, sy = preserve ? 1
+                                                                          : ny && !zero
+                                                                              ? (cb - ct) / normalization_frame.h
+                                                                              : box.h / range.h;
+            bool cx = false, cy = zero, ax = false, ay = false;
             const auto centered = [&](bool horizontal, float scale, float size, float low, float high) {
                 const float anchor = horizontal ? box.x + box.w / 2 : (ct + cb) / 2, start = horizontal ? raw.x : raw.y,
                             center = horizontal ? range.x + range.w / 2 : range.y + range.h / 2;
@@ -447,8 +586,10 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 }
             }
             if (zero && raw.h > ah + Epsilon()) sy = raw.h > Epsilon() ? ah / raw.h : 1;
-            const float nw = raw.w * sx, nh = raw.h * sy, bx = box.x + box.w * (raw.x - range.x) / range.w,
-                        by = box.y + box.h * (raw.y - range.y) / range.h;
+            const float nw = raw.w * sx, nh = raw.h * sy,
+                        bx = box.x + box.w * (raw.x - normalization_frame.x) / normalization_frame.w,
+                        by = ny && !zero ? ct + (cb - ct) * (raw.y - normalization_frame.y) / normalization_frame.h
+                                         : box.y + box.h * (raw.y - range.y) / range.h;
             float x = ax   ? centered(true, sx, nw, x1, x2)
                       : cx ? x1 + (aw - nw) / 2
                            : std::max(x1, std::min(bx, x2 - nw));
@@ -458,7 +599,10 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             float weight = 1;
             if (!preserve)
                 for (float ratio : leaf.ratios) weight *= Weight(ratio);
-            const float inherited = Area(box), actual = std::max(0.0f, sx * sy);
+            float inherited = planned ? 1 : Area(box);
+            if (planned)
+                for (float ratio : leaf.ratios) inherited *= ratio;
+            const float actual = std::max(0.0f, sx * sy);
             if (!zero && !preserve)
                 weight *= Weight(inherited > Epsilon() ? actual / inherited : actual);
             else if (zero && !preserve && box.w > Epsilon())
@@ -491,6 +635,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             }
             const float fx = raw.w > Epsilon() ? w / raw.w : sx, fy = raw.h > Epsilon() ? h / raw.h : sy;
             leaf.transform = {x - fx * raw.x, y - fy * raw.y, fx, fy};
+            leaf.weight = weight;
             leaf.fitted = true;
             if ((raw.w > Epsilon() && w <= Epsilon()) || (raw.h > Epsilon() && h <= Epsilon())) return;
             for (auto stroke : source) {
@@ -527,6 +672,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             if (!error.empty()) return Result<LayoutOutput>::Failure({JianziErrorCode::InvalidGeometry, error});
             for (int side = 0; side < 4; ++side)
                 for (auto* leaf : root->faces[side]) leaf->outer[side] = 1;
+            InheritCapsuleExterior(*root);
             Measure(*root);
             if (!error.empty()) return Result<LayoutOutput>::Failure({JianziErrorCode::InvalidGeometry, error});
             Distribute(*root, {}, {}, true);
@@ -545,10 +691,23 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                         output.flags.bottom_mode = BottomAvoidance::Segment;
             }
             if (render) {
-                Distribute(*root, {});
-                if (root->op)
-                    Place(*root);
-                else
+                if (root->op) {
+                    // Distance padding follows weight. Recompute from the
+                    // immutable source until stable, retaining only the final pass.
+                    for (int pass = 0; pass < 32; ++pass) {
+                        output.strokes.clear();
+                        Distribute(*root, {});
+                        Place(*root);
+                        float difference = 0;
+                        for (auto& item : items)
+                            if (item->vertical_slot) {
+                                difference = std::max(difference, std::abs(item->layout_weight - item->weight));
+                                item->layout_weight = item->weight;
+                            }
+                        // Float geometry cannot resolve the web's 1e-9 threshold.
+                        if (difference < 1e-7f) break;
+                    }
+                } else
                     output.strokes = source.strokes;
             }
             for (const auto& stroke : output.strokes) {
