@@ -41,6 +41,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             int side_a, side_b;
             std::vector<Item*> first, second;
             bool capsule = false, horizontal = false, wall = false;
+            BottomAvoidance wall_mode = BottomAvoidance::Segment;
         };
         const Layout& config;
         bool render;
@@ -56,12 +57,13 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
         static bool Flag(const BorderFlags& f, int side) {
             return side == T ? f.t : side == B ? f.b : side == L ? f.l : f.r;
         }
-        static void SetFlag(BorderFlags& f, int side) {
+        static void SetFlag(BorderFlags& f, int side, BottomAvoidance mode = BottomAvoidance::Segment) {
             if (side == T)
                 f.t = true;
-            else if (side == B)
+            else if (side == B) {
+                if (!f.b || mode == BottomAvoidance::Segment) f.bottom_mode = mode;
                 f.b = true;
-            else if (side == L)
+            } else if (side == L)
                 f.l = true;
             else
                 f.r = true;
@@ -130,9 +132,16 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                     // The host represents the filled capsule in external relations.
                     if (exposed[side])
                         for (const auto* leaf : b->faces[side])
-                            if (Flag(leaf->flags, side)) SetFlag(a->flags, side);
-                    relations.push_back(
-                        {item, side, side, {a}, b->faces[side], true, false, Flag(cap.border_flags, side)});
+                            if (Flag(leaf->flags, side)) SetFlag(a->flags, side, leaf->flags.bottom_mode);
+                    relations.push_back({item,
+                                         side,
+                                         side,
+                                         {a},
+                                         b->faces[side],
+                                         true,
+                                         false,
+                                         Flag(cap.border_flags, side),
+                                         cap.border_flags.bottom_mode});
                 }
             } else {
                 const bool horizontal = Horizontal(item->op);
@@ -261,6 +270,12 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             return horizontal ? std::min(x.y + x.h, y.y + y.h) - std::max(x.y, y.y) > Epsilon()
                               : std::min(x.x + x.w, y.x + y.w) - std::max(x.x, y.x) > Epsilon();
         }
+        static bool NeedsSegmentConflict(const Item& a, const Item& b, const Relation& relation) {
+            if (relation.capsule)
+                return relation.side_b != B || relation.wall_mode != BottomAvoidance::Distance ||
+                       b.flags.bottom_mode != BottomAvoidance::Distance;
+            return relation.side_a != B || a.flags.bottom_mode != BottomAvoidance::Distance;
+        }
         bool Resolve() {
             for (const auto& relation : relations) {
                 struct Pair {
@@ -277,7 +292,8 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 if (!relation.capsule) {
                     std::vector<Pair> conflicts;
                     for (const auto& pair : pairs)
-                        if (Flag(pair.a->flags, relation.side_a) && Flag(pair.b->flags, relation.side_b))
+                        if (Flag(pair.a->flags, relation.side_a) && Flag(pair.b->flags, relation.side_b) &&
+                            NeedsSegmentConflict(*pair.a, *pair.b, relation))
                             conflicts.push_back(pair);
                     for (size_t seed = 0; seed < conflicts.size(); ++seed)
                         if (!conflicts[seed].used) {
@@ -339,14 +355,19 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                                 b.active_y = true;
                             const bool fa = relation.capsule ? relation.wall : Flag(a.flags, relation.side_a),
                                        fb = Flag(b.flags, relation.side_b), conflict = fa && fb;
-                            if (conflict && !relation.horizontal && (relation.side_b == T || relation.side_b == B)) {
+                            const bool segment_conflict = conflict && NeedsSegmentConflict(a, b, relation),
+                                       distance_conflict = conflict && !segment_conflict;
+                            if (segment_conflict && !relation.horizontal &&
+                                (relation.side_b == T || relation.side_b == B)) {
                                 auto& owner = relation.capsule || bs.size() > 1 ? b : a;
                                 owner.reserved[&owner == &b ? relation.side_b : relation.side_a] = 1;
                             }
                             if (relation.capsule) {
                                 const bool vertical = relation.side_b == T || relation.side_b == B;
                                 const float coefficient =
-                                    relation.wall ? (vertical ? (fb ? 0.0f : 1.0f) : (fb ? 2.0f : 1.0f)) : 0;
+                                    relation.wall ? (vertical ? (fb ? (distance_conflict ? 2.0f : 0.0f) : 1.0f)
+                                                              : (fb ? 2.0f : 1.0f))
+                                                  : 0;
                                 b.coefficients[relation.side_b] = std::max(
                                     b.coefficients[relation.side_b], b.base == 0 && vertical ? 0.0f : coefficient);
                             } else {
@@ -354,8 +375,10 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                                 const float coefficient = conflict   ? (relation.horizontal ? 1.0f : 0.0f)
                                                           : fa != fb ? .5f
                                                                      : .25f;
-                                a.coefficients[relation.side_a] = std::max(a.coefficients[relation.side_a],
-                                                                           special ? (fa ? 2.0f : 1.0f) : coefficient);
+                                a.coefficients[relation.side_a] =
+                                    std::max(a.coefficients[relation.side_a], distance_conflict ? 2.0f
+                                                                              : special         ? (fa ? 2.0f : 1.0f)
+                                                                                                : coefficient);
                                 b.coefficients[relation.side_b] = std::max(b.coefficients[relation.side_b],
                                                                            special ? (fb ? 2.0f : 1.0f) : coefficient);
                             }
@@ -515,6 +538,12 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             for (int side = 0; side < 4; ++side)
                 for (auto* leaf : root->faces[side]) flags[side] = flags[side] || Flag(leaf->flags, side);
             output.flags = {flags[T], flags[B], flags[L], flags[R]};
+            if (flags[B]) {
+                output.flags.bottom_mode = BottomAvoidance::Distance;
+                for (const auto* leaf : root->faces[B])
+                    if (leaf->flags.b && leaf->flags.bottom_mode == BottomAvoidance::Segment)
+                        output.flags.bottom_mode = BottomAvoidance::Segment;
+            }
             if (render) {
                 Distribute(*root, {});
                 if (root->op)

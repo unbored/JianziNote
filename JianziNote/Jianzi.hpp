@@ -57,11 +57,13 @@ class Jianzi {
   Result<std::vector<PathData>> RenderPath() const;
 
   // 边界避让标记
+  enum class BottomAvoidance { Segment, Distance };
   struct BorderFlags {
     bool t = false;  // 顶部
     bool b = false;  // 底部
     bool l = false;  // 左边
     bool r = false;  // 右边
+    BottomAvoidance bottom_mode = BottomAvoidance::Segment; // b 为 true 时有效
   };
 
   // 获取名称。减字名称会根据运算变化

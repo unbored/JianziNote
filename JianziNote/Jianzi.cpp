@@ -112,9 +112,18 @@ bool Flag(const nlohmann::json& flags, const char* long_name, const char* short_
 }
 
 bool ReadFlags(const nlohmann::json& flags, Jianzi::BorderFlags& output) {
-    return flags.is_object() && Flag(flags, "top", "t", output.t) &&
-           Flag(flags, "bottom", "b", output.b) && Flag(flags, "left", "l", output.l) &&
-           Flag(flags, "right", "r", output.r);
+    if (!flags.is_object() || !Flag(flags, "top", "t", output.t) ||
+        !Flag(flags, "left", "l", output.l) || !Flag(flags, "right", "r", output.r)) return false;
+    const auto bottom = Member(flags, "bottom") ? Member(flags, "bottom") : Member(flags, "b");
+    output.bottom_mode = Jianzi::BottomAvoidance::Segment;
+    if (!bottom) { output.b = false; return true; }
+    if (bottom->is_boolean()) { output.b = bottom->get<bool>(); return true; }
+    if (bottom->is_string() && bottom->get<std::string>() == "distance") {
+        output.b = true;
+        output.bottom_mode = Jianzi::BottomAvoidance::Distance;
+        return true;
+    }
+    return false;
 }
 
 bool ReadPoint(const nlohmann::json& source, Point2f& output) {
