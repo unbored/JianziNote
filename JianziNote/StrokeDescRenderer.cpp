@@ -284,6 +284,37 @@ Result<CompiledDescription> CompileDescription(const nlohmann::json& source) {
       }
     }
   }
+  // An explicitly closed contour has one geometric seam vertex, even though
+  // the command stream contains both M and the final segment endpoint. Older
+  // models learned them independently (including different semantic frames).
+  // Topology distinguishes this duplicate from a real implicit closing edge.
+  size_t point_offset = 0;
+  for (size_t ci = 0; ci < result.outline_template.size(); ++ci) {
+    const auto& contour = result.outline_template[ci];
+    size_t points = 0, segments = 0;
+    for (const auto key : contour) {
+      points += PointCount(key);
+      if (key == PathKey::LineTo || key == PathKey::QuadTo || key == PathKey::CubicTo) ++segments;
+    }
+    if (contour.size() >= 3 && contour.front() == PathKey::MoveTo && contour.back() == PathKey::Close &&
+        PointCount(contour[contour.size() - 2]) > 0 && points > 1 && segments > 0 &&
+        result.smooth_joins[ci].size() == segments) {
+      const auto last = point_offset + points - 1;
+      result.point_segment_bindings[last] = result.point_segment_bindings[point_offset];
+      if (!result.point_semantics.empty())
+        result.point_semantics[last] = result.point_semantics[point_offset];
+      for (size_t axis = 0; axis < 2; ++axis) {
+        const auto from = point_offset * 2 + axis, to = last * 2 + axis;
+        for (size_t row = 0; row < result.input_count; ++row)
+          result.weights[row * result.output_count + to] = result.weights[row * result.output_count + from];
+        if (result.output_center.size() == result.output_count)
+          result.output_center[to] = result.output_center[from];
+        if (result.residual_limits.size() == result.output_count)
+          result.residual_limits[to] = result.residual_limits[from];
+      }
+    }
+    point_offset += points;
+  }
   return Result<CompiledDescription>::Success(std::move(result));
 }
 
