@@ -521,7 +521,10 @@ std::vector<SegmentRef> ContourSegments(const Contour& contour) {
 Vec StartTangent(const SegmentRef& segment, const Contour& contour) {
   if (!segment.implicit) {
     const auto& command = contour[segment.command_index];
-    if ((segment.key == PathKey::CubicTo || segment.key == PathKey::QuadTo) && !command.points.empty()) {
+    if (segment.key == PathKey::CubicTo && !command.points.empty()) {
+      return Unit(command.points.front() - segment.start, Unit(segment.end - segment.start, {1, 0}));
+    }
+    if (segment.key == PathKey::QuadTo && !command.points.empty()) {
       return Unit(command.points.front() - segment.start, {1, 0});
     }
   }

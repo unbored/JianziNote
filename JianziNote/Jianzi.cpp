@@ -322,7 +322,10 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
         const auto target = target_source->get<std::string>();
         const auto decoded = utf8::Decode(name);
         const auto target_decoded = utf8::Decode(target);
-        std::string type = "Other";
+        // Match the web's default category for a direct glyph alias.
+        // Formula and fallback targets still default to Other.
+        const auto target_glyph = context->m_library.glyphs.find(target);
+        std::string type = target_glyph != context->m_library.glyphs.end() ? target_glyph->second.type : "Other";
         if (!decoded || decoded.GetValue()->empty() || !target_decoded || target.empty() ||
             !OptionalString(alias, "type", type) ||
             !context->m_library.aliases.emplace(name, target).second) {
