@@ -117,6 +117,7 @@ class Jianzi {
     char operation = 0;
     std::string name;
     BoundingBox range;
+    bool has_range = false;
     BorderFlags flags;
     int segments = 1;
     std::unique_ptr<Capsule> capsule;

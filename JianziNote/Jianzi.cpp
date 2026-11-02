@@ -42,6 +42,7 @@ struct Jianzi::LibraryData {
         int vertical_segments = 1;
         std::optional<Capsule> capsule;
         BoundingBox range;
+        bool has_range = false;
         std::vector<Stroke> strokes;
     };
 
@@ -243,6 +244,7 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
                 return LibraryError<std::unique_ptr<JianziContext>>("Glyph range_box is invalid: " + source.key());
             }
             glyph.range = {tl.x, tl.y, br.x-tl.x, br.y-tl.y};
+            glyph.has_range = true;
         }
         if (const auto capsule = Member(source.value(), "capsule")) {
             if (!capsule->is_object()) {
@@ -378,6 +380,7 @@ Jianzi::Jianzi(const JianziContext& context, const char* name) : m_context(conte
     m_node->strokes = glyph.strokes;
     m_node->name = m_name;
     m_node->range = glyph.range;
+    m_node->has_range = glyph.has_range;
     m_node->flags = glyph.border_flags;
     m_node->segments = std::max(0, glyph.vertical_segments);
     if (glyph.capsule) m_node->capsule = std::make_unique<Capsule>(*glyph.capsule);
@@ -990,7 +993,7 @@ int Jianzi::GetSegments() const {
 }
 
 Jianzi::Node::Node(const Node& other)
-    : operation(other.operation), name(other.name), range(other.range), flags(other.flags),
+    : operation(other.operation), name(other.name), range(other.range), has_range(other.has_range), flags(other.flags),
       segments(other.segments), strokes(other.strokes) {
     if (other.capsule) capsule = std::make_unique<Capsule>(*other.capsule);
     if (other.first) first = std::make_unique<Node>(*other.first);
