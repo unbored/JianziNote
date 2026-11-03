@@ -36,7 +36,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             Sides reserved{}, coefficients{}, outer{}, margins{};
             Sides inherited_outer{}, exterior_credit{};
             Sides segment_space{}, zero_padding{};
-            bool active_x = false, active_y = false, center_x = false;
+            bool active_x = false, active_y = false, center_x = false, center_group = false, stacked_body = false;
             std::optional<float> center_margin;
             int base = 0, effective = 0, base_tree = -1, extra = 0, above = 0;
             float max_width = 0;
@@ -189,6 +189,13 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 MarkColumnCenters(*item.second);
                 return;
             }
+            if (Horizontal(item.op)) {
+                // Center the complete row, without rewriting its internal spacing.
+                item.center_group = centered;
+                MarkColumnCenters(*item.first);
+                MarkColumnCenters(*item.second);
+                return;
+            }
             const bool center = centered || item.op == '/';
             if (item.op == '/') {
                 float minimum = shared_margin.value_or(std::numeric_limits<float>::infinity());
@@ -199,6 +206,26 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             }
             MarkColumnCenters(*item.first, center, shared_margin);
             MarkColumnCenters(*item.second, center, shared_margin);
+        }
+        void CollectVerticalAtoms(Item& item, std::vector<Item*>& atoms) {
+            if (!item.op || item.op == '*') {
+                atoms.push_back(item.op ? item.first : &item);
+                return;
+            }
+            if (Horizontal(item.op)) return;
+            CollectVerticalAtoms(*item.first, atoms);
+            CollectVerticalAtoms(*item.second, atoms);
+        }
+        void MarkStackBodies(Item& item) {
+            if (!item.op) return;
+            if (item.op == '/' || item.op == '^') {
+                std::vector<Item*> atoms;
+                CollectVerticalAtoms(item, atoms);
+                if (atoms.size() > 1)
+                    for (auto* leaf : atoms) leaf->stacked_body = true;
+            }
+            MarkStackBodies(*item.first);
+            MarkStackBodies(*item.second);
         }
         Item* Build(const Node& source) {
             items.push_back(std::make_unique<Item>());
@@ -330,10 +357,9 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             if (!active) return std::nullopt;
             for (auto* leaf : atoms) {
                 const auto& m = leaf->margins;
-                const float minimum = std::min(m[T], m[B]);
                 leaf->padding = {
-                    leaf->outer[T] ? std::max(0.0f, (leaf->active_y ? minimum : m[T]) - leaf->exterior_credit[T]) : 0,
-                    leaf->outer[B] ? std::max(0.0f, (leaf->active_y ? minimum : m[B]) - leaf->exterior_credit[B]) : 0,
+                    leaf->outer[T] ? std::max(0.0f, m[T] - leaf->exterior_credit[T]) : 0,
+                    leaf->outer[B] ? std::max(0.0f, m[B] - leaf->exterior_credit[B]) : 0,
                     std::max(0.0f, leaf->coefficients[T] * config.border_width * leaf->layout_weight),
                     std::max(0.0f, leaf->coefficients[B] * config.border_width * leaf->layout_weight)};
             }
@@ -381,7 +407,13 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             const auto offered = plan && plan->elastic_offer ? *plan->elastic_offer : box;
             if (plan) {
                 const float height = RequiredHeight(item, plan->unit, layout_segments);
-                box.y += std::max(0.0f, box.h - height) / 2;
+                const auto exterior = [&](int side) {
+                    return std::all_of(item.faces[side].begin(), item.faces[side].end(),
+                                       [side](const Item* leaf) { return leaf->outer[side] != 0; });
+                };
+                const bool top = exterior(T), bottom = exterior(B);
+                const float spare = std::max(0.0f, box.h - height);
+                box.y += top && !bottom ? 0 : bottom && !top ? spare : spare / 2;
                 box.h = std::min(box.h, height);
             }
             item.stack_offer.reset();
@@ -752,6 +784,9 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 sy = ah / raw.h;
                 cy = true;
             }
+            if (planned && ny && !zero && !leaf.stacked_body && raw.h > Epsilon() &&
+                static_cast<bool>(leaf.outer[T]) != static_cast<bool>(leaf.outer[B]))
+                sy = ah / raw.h;
             if (leaf.center_x && !preserve) sx = centered_scale(sx, x1, x2);
             if (zero)
                 sy = 1;
@@ -777,6 +812,12 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             float y = ay   ? centered(false, sy, nh, y1, y2)
                       : cy ? y1 + (ah - nh) / 2
                            : std::max(y1, std::min(by, y2 - nh));
+            // Crop by the symmetric source minimum, but keep real exterior
+            // whitespace absolute. Put unused body room toward the contact.
+            if (planned && ny && !zero && !ay) {
+                if (leaf.outer[T] && !leaf.outer[B]) y = y1;
+                else if (leaf.outer[B] && !leaf.outer[T]) y = y2 - nh;
+            }
             if (zero && !preserve) {
                 const auto& padding = leaf.zero_padding;
                 y = ct + padding[T] + (cb - ct - padding[T] - padding[B]) / 2 - raw.h / 2;
@@ -903,6 +944,31 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 output.strokes.push_back(std::move(stroke));
             }
         }
+        std::optional<BoundingBox> FittedRange(const Item& item) const {
+            if (item.op == '*') return FittedRange(*item.first);
+            if (!item.op) {
+                if (!item.fitted) return std::nullopt;
+                const auto& r = item.source->range;
+                const auto start = item.transform * Point2f{r.x, r.y};
+                return BoundingBox{start.x, start.y, item.transform.w * r.w, item.transform.h * r.h};
+            }
+            const auto a = FittedRange(*item.first), b = FittedRange(*item.second);
+            if (!a) return b;
+            if (!b) return a;
+            const float x = std::min(a->x, b->x), y = std::min(a->y, b->y);
+            return BoundingBox{x, y, std::max(a->x + a->w, b->x + b->w) - x,
+                                    std::max(a->y + a->h, b->y + b->h) - y};
+        }
+        void ShiftPlacedTree(Item& item, float dx) {
+            item.allocation.x += dx;
+            if (item.op) {
+                ShiftPlacedTree(*item.first, dx);
+                ShiftPlacedTree(*item.second, dx);
+            } else if (item.fitted) {
+                item.transform.x += dx;
+                item.fitted_bounds.x += dx;
+            }
+        }
         void Place(Item& item) {
             if (!item.op) {
                 Fit(item);
@@ -935,8 +1001,18 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                     Place(*item.second);
                 }
             } else {
+                const auto first_stroke = output.strokes.size();
                 Place(*item.first);
                 Place(*item.second);
+                if (item.center_group) {
+                    const auto range = FittedRange(item);
+                    if (!range) return;
+                    const float dx = item.allocation.x + item.allocation.w / 2 - range->x - range->w / 2;
+                    ShiftPlacedTree(*item.first, dx);
+                    ShiftPlacedTree(*item.second, dx);
+                    for (size_t i = first_stroke; i < output.strokes.size(); ++i)
+                        for (auto& vertex : output.strokes[i].vertice) vertex.pt.x += dx;
+                }
             }
         }
         void Solve() {
@@ -972,6 +1048,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 for (auto* leaf : root->faces[side]) leaf->outer[side] = 1;
             InheritCapsuleExterior(*root);
             MarkColumnCenters(*root);
+            MarkStackBodies(*root);
             Measure(*root);
             if (!error.empty()) return Result<LayoutOutput>::Failure({JianziErrorCode::InvalidGeometry, error});
             Distribute(*root, {}, {}, true);
