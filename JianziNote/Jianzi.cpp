@@ -43,6 +43,8 @@ struct Jianzi::LibraryData {
         std::optional<Capsule> capsule;
         BoundingBox range;
         bool has_range = false;
+        bool fixed_outline = false;
+        std::vector<PathData> outline;
         std::vector<Stroke> strokes;
     };
 
@@ -262,10 +264,57 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
             compiled.v_segments = std::max(0, compiled.v_segments);
             glyph.capsule = compiled;
         }
+        std::string geometry = "skeleton";
+        if (!OptionalString(source.value(), "geometry", geometry) ||
+            (geometry != "skeleton" && geometry != "fixed-outline"))
+            return LibraryError<std::unique_ptr<JianziContext>>("Unknown glyph geometry: " + source.key());
+        glyph.fixed_outline = geometry == "fixed-outline";
+        if (glyph.fixed_outline) {
+            const auto outline = Member(source.value(), "outline");
+            if (!outline || !outline->is_array())
+                return LibraryError<std::unique_ptr<JianziContext>>("Fixed glyph requires outline contours: " + source.key());
+            for (const auto& contour : *outline) {
+                if (!contour.is_array() || contour.size() < 3)
+                    return LibraryError<std::unique_ptr<JianziContext>>("Invalid fixed contour: " + source.key());
+                for (size_t i = 0; i < contour.size(); ++i) {
+                    const auto& command = contour[i];
+                    const auto type = Member(command, "type");
+                    if (!type || !type->is_string())
+                        return LibraryError<std::unique_ptr<JianziContext>>("Invalid outline command: " + source.key());
+                    const auto key = type->get<std::string>();
+                    if ((i == 0 && key != "M") || (i != 0 && key == "M") ||
+                        (i + 1 == contour.size() && key != "Z") || (i + 1 != contour.size() && key == "Z"))
+                        return LibraryError<std::unique_ptr<JianziContext>>("Outline contours must be closed: " + source.key());
+                    PathData compiled;
+                    if (key == "M") compiled.key = PathKey::MoveTo;
+                    else if (key == "L") compiled.key = PathKey::LineTo;
+                    else if (key == "Q") compiled.key = PathKey::QuadTo;
+                    else if (key == "C") compiled.key = PathKey::CubicTo;
+                    else if (key == "Z") compiled.key = PathKey::Close;
+                    else return LibraryError<std::unique_ptr<JianziContext>>("Unknown outline command: " + source.key());
+                    const auto add_point = [&](const char* x, const char* y) {
+                        const auto px = Member(command, x), py = Member(command, y);
+                        if (!px || !py || !px->is_number() || !py->is_number()) return false;
+                        const auto a = px->get<double>(), b = py->get<double>();
+                        if (!std::isfinite(a) || !std::isfinite(b) ||
+                            !std::isfinite(static_cast<float>(a)) || !std::isfinite(static_cast<float>(b))) return false;
+                        compiled.pts.push_back({static_cast<float>(a), static_cast<float>(b)});
+                        return true;
+                    };
+                    if (((key == "Q" || key == "C") && !add_point("x1", "y1")) ||
+                        (key == "C" && !add_point("x2", "y2")) ||
+                        (key != "Z" && !add_point("x", "y")))
+                        return LibraryError<std::unique_ptr<JianziContext>>("Invalid outline coordinates: " + source.key());
+                    glyph.outline.push_back(std::move(compiled));
+                }
+            }
+        }
         const auto strokes = Member(source.value(), "strokes");
         if (!strokes || !strokes->is_array()) {
             return LibraryError<std::unique_ptr<JianziContext>>("Glyph strokes must be an array: " + source.key());
         }
+        if (glyph.fixed_outline && !strokes->empty())
+            return LibraryError<std::unique_ptr<JianziContext>>("Fixed glyph cannot contain skeleton strokes: " + source.key());
         for (const auto& stroke_source : *strokes) {
             Stroke stroke;
             const auto desc = Member(stroke_source, "desc");
@@ -381,6 +430,8 @@ Jianzi::Jianzi(const JianziContext& context, const char* name) : m_context(conte
     m_node->name = m_name;
     m_node->range = glyph.range;
     m_node->has_range = glyph.has_range;
+    m_node->fixed_outline = glyph.fixed_outline;
+    m_node->outline = glyph.outline;
     m_node->flags = glyph.border_flags;
     m_node->segments = std::max(0, glyph.vertical_segments);
     if (glyph.capsule) m_node->capsule = std::make_unique<Capsule>(*glyph.capsule);
@@ -817,7 +868,28 @@ Result<std::string> JianziLibrary::ParseNatural(const char* u8_str) const {
         }
         prev_type = info_list[pos].type;  // 为下一个字做准备
 
+        const auto current_name = info_list[pos].name;
         ret += info_list[pos++].name;
+
+        // Capsule placement takes precedence over ordinary natural-input types.
+        // Keep the specialized MainComplex/MainShu grouping rules below.
+        if (pos < info_list.size() && prev_type != "MainComplex" && prev_type != "MainShu") {
+            const auto current = Parse(current_name.c_str());
+            if (current && current.GetValue()->m_node && !current.GetValue()->m_node->operation &&
+                current.GetValue()->m_node->capsule) {
+                ret += "*";
+                if (info_list[pos].type == "Number") {
+                    pos = ProcessNumbers(pos, info_list.size());
+                    continue;
+                }
+                std::string remaining;
+                for (size_t i = pos; i < info_list.size(); ++i) remaining += info_list[i].name;
+                auto content = ParseNatural(remaining.c_str());
+                if (!content) return content;
+                ret += "(" + *content.GetValue() + ")";
+                return Result<std::string>::Success(std::move(ret));
+            }
+        }
 
         // 左手指法
         if (prev_type == "Left") {
@@ -943,6 +1015,13 @@ Result<Jianzi> Jianzi::Combine(const Jianzi& other, char operation) const {
     result.m_node->name = result.m_name;
     result.m_node->first = std::make_unique<Node>(*m_node);
     result.m_node->second = std::make_unique<Node>(*other.m_node);
+    const auto fixed_root = [](const Node& node) {
+        return node.fixed_outline || (node.operation == '*' && node.first && node.first->fixed_outline);
+    };
+    if (fixed_root(*m_node) || fixed_root(*other.m_node)) {
+        const auto checked = LayoutEngine::Run(*result.m_node, m_context.m_layout, false);
+        if (!checked) return Result<Jianzi>::Failure(*checked.GetError());
+    }
     return Result<Jianzi>::Success(std::move(result));
 }
 
@@ -959,6 +1038,7 @@ Result<std::vector<PathData>> qin::Jianzi::RenderPath() const {
     if (!layout) return Result<std::vector<PathData>>::Failure(*layout.GetError());
     auto paths = m_context.m_renderer->Render(layout.GetValue()->strokes);
     if (!paths) return Result<std::vector<PathData>>::Failure(*paths.GetError());
+    paths.GetValue()->insert(paths.GetValue()->begin(), layout.GetValue()->outline.begin(), layout.GetValue()->outline.end());
     for (auto& command : *paths.GetValue()) {
         for (auto& point : command.pts) {
             point.x = (point.x - m_context.m_layout.normalization_tx) /
@@ -993,7 +1073,8 @@ int Jianzi::GetSegments() const {
 }
 
 Jianzi::Node::Node(const Node& other)
-    : operation(other.operation), name(other.name), range(other.range), has_range(other.has_range), flags(other.flags),
+    : operation(other.operation), name(other.name), range(other.range), has_range(other.has_range),
+      fixed_outline(other.fixed_outline), outline(other.outline), flags(other.flags),
       segments(other.segments), strokes(other.strokes) {
     if (other.capsule) capsule = std::make_unique<Capsule>(*other.capsule);
     if (other.first) first = std::make_unique<Node>(*other.first);

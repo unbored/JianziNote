@@ -92,7 +92,8 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             for (auto* leaf : from)
                 if (std::find(into.begin(), into.end(), leaf) == into.end()) into.push_back(leaf);
         }
-        static Bounds Envelope(const std::vector<Stroke>& strokes, const Capsule* cap) {
+        static Bounds Envelope(const std::vector<Stroke>& strokes, const Capsule* cap,
+                               const std::vector<PathData>* outline = nullptr) {
             float x1 = std::numeric_limits<float>::max(), y1 = x1;
             float x2 = -x1, y2 = -x1;
             bool found = false;
@@ -105,6 +106,43 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             };
             for (const auto& stroke : strokes)
                 for (const auto& vertex : stroke.vertice) add(vertex.pt);
+            if (outline) {
+                Point2f start{}, first{};
+                for (const auto& command : *outline) {
+                    if (command.key == PathKey::Close) { add(first); start = first; continue; }
+                    const auto end = command.pts.back();
+                    if (command.key == PathKey::MoveTo) { first = start = end; add(end); continue; }
+                    add(start); add(end);
+                    const auto point = [&](float t) {
+                        const float u = 1 - t;
+                        if (command.key == PathKey::QuadTo) {
+                            const auto c = command.pts[0];
+                            return Point2f{u*u*start.x+2*u*t*c.x+t*t*end.x, u*u*start.y+2*u*t*c.y+t*t*end.y};
+                        }
+                        const auto c = command.pts[0], d = command.pts[1];
+                        return Point2f{u*u*u*start.x+3*u*u*t*c.x+3*u*t*t*d.x+t*t*t*end.x,
+                                       u*u*u*start.y+3*u*u*t*c.y+3*u*t*t*d.y+t*t*t*end.y};
+                    };
+                    if (command.key == PathKey::QuadTo || command.key == PathKey::CubicTo)
+                        for (int axis = 0; axis < 2; ++axis) {
+                            const float p = axis ? start.y : start.x, q = axis ? end.y : end.x,
+                                        c = axis ? command.pts[0].y : command.pts[0].x;
+                            const auto root = [&](float t) { if (t > 0 && t < 1) add(point(t)); };
+                            if (command.key == PathKey::QuadTo) {
+                                const float d = p - 2*c + q;
+                                if (std::abs(d) > Epsilon()) root((p-c)/d);
+                            } else {
+                                const float d = axis ? command.pts[1].y : command.pts[1].x,
+                                            a = -p+3*c-3*d+q, b = 2*(p-2*c+d), v = c-p;
+                                if (std::abs(a) < Epsilon()) { if (std::abs(b) > Epsilon()) root(-v/b); }
+                                else { const float disc = b*b-4*a*v; if (disc >= 0) {
+                                    root((-b+std::sqrt(disc))/(2*a)); root((-b-std::sqrt(disc))/(2*a));
+                                }}
+                            }
+                        }
+                    start = end;
+                }
+            }
             if (cap) {
                 add(cap->tl);
                 add(cap->br);
@@ -136,7 +174,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             InheritCapsuleExterior(*item.first);
             InheritCapsuleExterior(*item.second);
         }
-        void MarkColumnCenters(Item& item, bool horizontal_context = false, bool centered = false,
+        void MarkColumnCenters(Item& item, bool centered = false,
                                std::optional<float> shared_margin = std::nullopt) {
             if (!item.op) {
                 item.center_x = centered;
@@ -151,17 +189,16 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 MarkColumnCenters(*item.second);
                 return;
             }
-            const bool horizontal = horizontal_context || item.op == '&' || item.op == '|',
-                       center = centered || (item.op == '/' && horizontal_context);
-            if (item.op == '/' && horizontal_context) {
+            const bool center = centered || item.op == '/';
+            if (item.op == '/') {
                 float minimum = shared_margin.value_or(std::numeric_limits<float>::infinity());
                 for (int side : {L, R})
                     for (const auto* leaf : item.faces[side])
                         minimum = std::min(minimum, std::min(leaf->margins[L], leaf->margins[R]));
                 if (std::isfinite(minimum)) shared_margin = minimum;
             }
-            MarkColumnCenters(*item.first, horizontal, center, shared_margin);
-            MarkColumnCenters(*item.second, horizontal, center, shared_margin);
+            MarkColumnCenters(*item.first, center, shared_margin);
+            MarkColumnCenters(*item.second, center, shared_margin);
         }
         Item* Build(const Node& source) {
             items.push_back(std::make_unique<Item>());
@@ -170,7 +207,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             item->op = source.operation;
             if (!item->op) {
                 item->flags = source.flags;
-                item->original = Envelope(source.strokes, source.capsule.get());
+                item->original = Envelope(source.strokes, source.capsule.get(), source.fixed_outline ? &source.outline : nullptr);
                 const auto& b = item->original.box;
                 const auto& f = source.range;
                 item->margins = {std::max(0.0f, b.y - f.y), std::max(0.0f, f.y + f.h - b.y - b.h),
@@ -239,6 +276,8 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             const int ca = Measure(a), cb = Measure(b);
             if (Horizontal(item.op))
                 item.effective = std::max(ca, cb);
+            else if (item.op == '*' && a.source->fixed_outline)
+                item.effective = ca;
             else if (item.op == '*')
                 item.effective =
                     SegmentCount(static_cast<std::int64_t>(ca) + std::max(cb, a.source->capsule->v_segments) -
@@ -419,7 +458,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                     Distribute(a, box, ratios, provisional);
                 const auto& cap = *a.source->capsule;
                 const float ratio =
-                    a.effective > 0 && item.effective > 0 ? static_cast<float>(a.effective) / item.effective : 1;
+                    !a.source->fixed_outline && a.effective > 0 && item.effective > 0 ? static_cast<float>(a.effective) / item.effective : 1;
                 const auto& host = a.original.box;
                 const float top = host.y, bottom = host.y + host.h;
                 auto adjusted = cap;
@@ -442,8 +481,8 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                     a.adjusted_capsule = adjusted;
                 }
                 const auto& f = a.source->range;
-                const Point2f start = box * Point2f{(adjusted.tl.x - f.x) / f.w, (adjusted.tl.y - f.y) / f.h},
-                              end = box * Point2f{(adjusted.br.x - f.x) / f.w, (adjusted.br.y - f.y) / f.h};
+                const Point2f start = a.source->fixed_outline ? adjusted.tl : box * Point2f{(adjusted.tl.x - f.x) / f.w, (adjusted.tl.y - f.y) / f.h},
+                              end = a.source->fixed_outline ? adjusted.br : box * Point2f{(adjusted.br.x - f.x) / f.w, (adjusted.br.y - f.y) / f.h};
                 descend(b, {start.x, start.y, std::max(0.0f, end.x - start.x), std::max(0.0f, end.y - start.y)},
                         std::nullopt, std::nullopt, true);
             } else if (a.base_tree == 0 || b.base_tree == 0) {
@@ -612,6 +651,13 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             return true;
         }
         void Fit(Item& leaf, bool preserve = false) {
+            if (leaf.source->fixed_outline) {
+                leaf.transform = {0, 0, 1, 1};
+                leaf.fitted_bounds = leaf.original.box;
+                leaf.weight = 1; leaf.fitted = true;
+                output.outline.insert(output.outline.end(), leaf.source->outline.begin(), leaf.source->outline.end());
+                return;
+            }
             const auto& source = leaf.capsule_adjusted ? leaf.adjusted : leaf.source->strokes;
             const Capsule* cap = leaf.adjusted_capsule ? &*leaf.adjusted_capsule : leaf.source->capsule.get();
             const auto envelope = Envelope(source, cap);
@@ -898,6 +944,7 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
             // pass is retained, including when no slack absorption is needed.
             for (int pass = 0; pass < 32; ++pass) {
                 output.strokes.clear();
+                output.outline.clear();
                 Distribute(*root, {});
                 Place(*root);
                 float difference = 0;
@@ -909,7 +956,16 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                 if (difference < 1e-7f) break;
             }
         }
+        bool CheckFixedRoot(const Node& node, bool allowed = true) {
+            if (node.fixed_outline) return allowed && !node.outline.empty();
+            if (!node.operation) return true;
+            if (allowed && node.operation == '*' && node.first->fixed_outline)
+                return node.first->capsule && CheckFixedRoot(*node.first) && CheckFixedRoot(*node.second, false);
+            return CheckFixedRoot(*node.first, false) && CheckFixedRoot(*node.second, false);
+        }
         Result<LayoutOutput> Run(const Node& source) {
+            if (!CheckFixedRoot(source)) return Result<LayoutOutput>::Failure(
+                {JianziErrorCode::InvalidFormula, "A fixed-outline glyph requires nonempty contours and may only be the final root host. Use an ordinary glyph for composition."});
             root = Build(source);
             if (!error.empty()) return Result<LayoutOutput>::Failure({JianziErrorCode::InvalidGeometry, error});
             for (int side = 0; side < 4; ++side)
@@ -952,8 +1008,10 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                         absorb_slack = true;
                         Solve();
                     }
-                } else
+                } else {
                     output.strokes = source.strokes;
+                    output.outline = source.outline;
+                }
             }
             for (const auto& stroke : output.strokes) {
                 if (!std::isfinite(stroke.width))

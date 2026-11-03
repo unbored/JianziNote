@@ -118,6 +118,8 @@ class Jianzi {
     std::string name;
     BoundingBox range;
     bool has_range = false;
+    bool fixed_outline = false;
+    std::vector<PathData> outline;
     BorderFlags flags;
     int segments = 1;
     std::unique_ptr<Capsule> capsule;
@@ -128,6 +130,7 @@ class Jianzi {
 
   struct LayoutOutput {
     std::vector<Stroke> strokes;
+    std::vector<PathData> outline;
     BorderFlags flags;
     int segments = 0;
   };
