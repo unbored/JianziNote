@@ -516,16 +516,42 @@ Result<Jianzi::LayoutOutput> Jianzi::LayoutEngine::Run(const Node& source, const
                     a.capsule_ratio = ratio;
                     a.capsule_adjusted = true;
                     a.adjusted = a.source->strokes;
-                    for (auto& stroke : a.adjusted)
-                        for (auto& vertex : stroke.vertice) {
+                    for (auto& stroke : a.adjusted) {
+                        const auto original = stroke.vertice;
+                        std::vector<double> along(original.size(), 0);
+                        for (size_t i = 1; i < original.size(); ++i)
+                            along[i] = along[i - 1] + std::hypot(
+                                static_cast<double>(original[i].pt.x) - original[i - 1].pt.x,
+                                static_cast<double>(original[i].pt.y) - original[i - 1].pt.y);
+                        for (size_t i = 0; i < stroke.vertice.size(); ++i) {
+                            auto& vertex = stroke.vertice[i];
                             if (vertex.region == VertexRegion::Top)
                                 vertex.pt.y = top + (vertex.pt.y - top) * ratio;
                             else if (vertex.region == VertexRegion::Bottom)
                                 vertex.pt.y = bottom - (bottom - vertex.pt.y) * ratio;
-                            else if (std::abs(cap.br.y - cap.tl.y) > Epsilon())
-                                vertex.pt.y = adjusted.tl.y + (vertex.pt.y - cap.tl.y) / (cap.br.y - cap.tl.y) *
-                                                                  (adjusted.br.y - adjusted.tl.y);
+                            else if (vertex.region == VertexRegion::Medium) {
+                                float upper = 0, lower = 1;
+                                double top_distance = std::numeric_limits<double>::infinity(),
+                                       bottom_distance = std::numeric_limits<double>::infinity();
+                                for (size_t j = 0; j < original.size(); ++j) {
+                                    const double distance = std::abs(along[j] - along[i]);
+                                    if (original[j].region == VertexRegion::Top && distance < top_distance - SlackEpsilon()) {
+                                        upper = original[j].pt.y;
+                                        top_distance = distance;
+                                    } else if (original[j].region == VertexRegion::Bottom && distance < bottom_distance - SlackEpsilon()) {
+                                        lower = original[j].pt.y;
+                                        bottom_distance = distance;
+                                    }
+                                }
+                                const float upper_shift = top + (upper - top) * ratio - upper,
+                                            lower_shift = bottom - (bottom - lower) * ratio - lower;
+                                const float t = lower - upper > Epsilon()
+                                                    ? std::clamp((vertex.pt.y - upper) / (lower - upper), 0.0f, 1.0f)
+                                                    : .5f;
+                                vertex.pt.y += upper_shift + t * (lower_shift - upper_shift);
+                            }
                         }
+                    }
                     a.adjusted_capsule = adjusted;
                 }
                 const auto& f = a.source->range;
