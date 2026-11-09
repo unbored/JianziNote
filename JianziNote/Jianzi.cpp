@@ -58,8 +58,7 @@ struct JianziContext {
     Jianzi::LibraryData m_library;
     std::unique_ptr<StrokeDescRenderer> m_renderer;
     Jianzi::Layout m_layout;
-    std::vector<JianziInfo> m_aliasList;
-    std::vector<JianziInfo> m_jianziList;
+    std::vector<JianziInfo> m_naturalList;
 };
 
 namespace {
@@ -357,7 +356,7 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
 
     for (const auto& [name, glyph] : context->m_library.glyphs) {
         const auto decoded = utf8::Decode(name);
-        context->m_jianziList.push_back({name, glyph.type, decoded.GetValue()->size()});
+        context->m_naturalList.push_back({name, glyph.type, decoded.GetValue()->size()});
     }
     const auto aliases = Member(library, "aliases");
     if (aliases && !aliases->is_array()) {
@@ -383,13 +382,14 @@ Result<std::unique_ptr<JianziContext>> JianziContext::Create(const nlohmann::jso
             return LibraryError<std::unique_ptr<JianziContext>>(
                 "Alias names and targets must be non-empty valid UTF-8 and names must be unique.");
         }
-        context->m_aliasList.push_back({name, type, decoded.GetValue()->size()});
+        // A glyph shadows an identically named alias, including its category.
+        if (context->m_library.glyphs.find(name) == context->m_library.glyphs.end())
+            context->m_naturalList.push_back({name, type, decoded.GetValue()->size()});
     }
     const auto compare = [](const JianziInfo& a, const JianziInfo& b) {
         return a.codepoint_count != b.codepoint_count ? a.codepoint_count > b.codepoint_count : a.name > b.name;
     };
-    std::sort(context->m_jianziList.begin(), context->m_jianziList.end(), compare);
-    std::sort(context->m_aliasList.begin(), context->m_aliasList.end(), compare);
+    std::sort(context->m_naturalList.begin(), context->m_naturalList.end(), compare);
     context->m_renderer = std::move(renderer);
     context->m_layout = layout;
     return Result<std::unique_ptr<JianziContext>>::Success(std::move(context));
@@ -771,11 +771,8 @@ Result<std::string> JianziLibrary::ParseNatural(const char* u8_str) const {
         return Result<void>::Success();
     };
 
-    // 先对别名进行标记
-    auto marked = MarkInput(m_context->m_aliasList);
-    if (!marked) return Result<std::string>::Failure(*marked.GetError());
-    // 再标记减字
-    marked = MarkInput(m_context->m_jianziList);
+    // 减字和别名统一按名称长度标记；完全同名时使用减字。
+    auto marked = MarkInput(m_context->m_naturalList);
     if (!marked) return Result<std::string>::Failure(*marked.GetError());
 
     // 未知字符仍保留为独立项。单独出现时可由字体 fallback；
