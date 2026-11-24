@@ -55,6 +55,8 @@ class Jianzi {
 
   // 使用字形包内置的样式渲染。
   Result<std::vector<PathData>> RenderPath() const;
+  // 获取布局中的非致命提示，例如比例约束无解或启用了保形回退。
+  Result<std::vector<std::string>> GetLayoutDiagnostics() const;
 
   // 边界避让标记
   enum class BottomAvoidance { Segment, Distance };
@@ -133,6 +135,9 @@ class Jianzi {
     std::vector<PathData> outline;
     BorderFlags flags;
     int segments = 0;
+    std::vector<std::string> diagnostics;
+    bool aspect_unresolved = false;
+    bool aspect_fallback = false;
   };
   struct LayoutEngine {
     static Result<LayoutOutput> Run(const Node &root, const Layout &layout, bool render = true);

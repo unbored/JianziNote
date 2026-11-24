@@ -1047,6 +1047,13 @@ Result<std::vector<PathData>> qin::Jianzi::RenderPath() const {
     return paths;
 }
 
+Result<std::vector<std::string>> Jianzi::GetLayoutDiagnostics() const {
+    if (!m_node) return Result<std::vector<std::string>>::Success({});
+    auto layout = LayoutEngine::Run(*m_node, m_context.m_layout);
+    if (!layout) return Result<std::vector<std::string>>::Failure(*layout.GetError());
+    return Result<std::vector<std::string>>::Success(std::move(layout.GetValue()->diagnostics));
+}
+
 const char* Jianzi::GetName() const { return m_name.c_str(); }
 
 JianziStatus Jianzi::GetStatus() const noexcept { return m_status; }
