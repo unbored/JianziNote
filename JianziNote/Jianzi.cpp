@@ -866,6 +866,7 @@ Result<std::string> JianziLibrary::ParseNatural(const char* u8_str) const {
         prev_type = info_list[pos].type;  // 为下一个字做准备
 
         const auto current_name = info_list[pos].name;
+        const auto group_start = ret.size();
         ret += info_list[pos++].name;
 
         // Capsule placement takes precedence over ordinary natural-input types.
@@ -886,6 +887,19 @@ Result<std::string> JianziLibrary::ParseNatural(const char* u8_str) const {
                 ret += "(" + *content.GetValue() + ")";
                 return Result<std::string>::Success(std::move(ret));
             }
+        }
+
+        // 修饰动作作用于后续完整动作组，而不是仅与下一个减字拼接。
+        // 显式加括号限定其作用域，不改变公式优先级及左手组后的 ^。
+        if ((prev_type == "GraceSide" || prev_type == "GraceAbove") && pos < info_list.size()) {
+            std::string remaining;
+            for (size_t i = pos; i < info_list.size(); ++i) remaining += info_list[i].name;
+            auto content = ParseNatural(remaining.c_str());
+            if (!content) return content;
+            ret.insert(group_start, "(");
+            ret += (prev_type == "GraceSide" ? "<(" : "/(");
+            ret += *content.GetValue() + "))";
+            return Result<std::string>::Success(std::move(ret));
         }
 
         // 左手指法
